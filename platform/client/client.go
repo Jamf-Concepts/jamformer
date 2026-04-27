@@ -11,8 +11,12 @@ import (
 
 // VerifyAuth creates a Jamf Platform SDK client and validates the credentials
 // using the SDK's built-in credential validation.
-func VerifyAuth(baseURL, clientID, clientSecret string) error {
-	c := jamfplatform.NewClient(baseURL, clientID, clientSecret)
+func VerifyAuth(baseURL, clientID, clientSecret, tenantID string) error {
+	var opts []jamfplatform.Option
+	if tenantID != "" {
+		opts = append(opts, jamfplatform.WithTenantID(tenantID))
+	}
+	c := jamfplatform.NewClient(baseURL, clientID, clientSecret, opts...)
 
 	if err := c.ValidateCredentials(context.Background()); err != nil {
 		return fmt.Errorf("authentication failed: %w", err)

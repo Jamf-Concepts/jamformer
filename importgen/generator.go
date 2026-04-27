@@ -219,6 +219,7 @@ type PlatformCredentials struct {
 	BaseURL         string
 	ClientID        string
 	ClientSecret    string
+	TenantID        string // optional; when set, added to provider block and tfvars
 	ProviderVersion string // user-specified exact pin (empty = use latest)
 	ResolvedVersion string // version resolved by terraform init (for >= constraint)
 }
@@ -330,6 +331,7 @@ provider "jamfplatform" {
   base_url      = var.jamfplatform_base_url
   client_id     = var.jamfplatform_client_id
   client_secret = var.jamfplatform_client_secret
+  tenant_id     = var.jamfplatform_tenant_id
 }
 `, versionLine)
 	if err := os.WriteFile(filepath.Join(outputDir, "provider.tf"), []byte(providerTF), 0644); err != nil {
@@ -352,12 +354,17 @@ variable "jamfplatform_client_secret" {
   type        = string
   sensitive   = true
 }
+
+variable "jamfplatform_tenant_id" {
+  description = "Jamf Platform tenant ID"
+  type        = string
+}
 `
 	if err := os.WriteFile(filepath.Join(outputDir, "variables.tf"), []byte(variablesTF), 0644); err != nil {
 		return fmt.Errorf("writing variables.tf: %w", err)
 	}
 
-	tfvars := fmt.Sprintf("jamfplatform_base_url = %q\n", creds.BaseURL)
+	tfvars := fmt.Sprintf("jamfplatform_base_url  = %q\njamfplatform_tenant_id = %q\n", creds.BaseURL, creds.TenantID)
 	return os.WriteFile(filepath.Join(outputDir, "terraform.tfvars"), []byte(tfvars), 0644)
 }
 

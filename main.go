@@ -481,6 +481,7 @@ func main() {
 	password := new(string)
 	clientID := new(string)
 	clientSecret := new(string)
+	tenantID := new(string) // Jamf Platform only (JAMF_TENANT_ID)
 	terraformPath := flag.String("terraform-path", "", "Path to terraform binary (skip auto-download) [env: JAMFORMER_TERRAFORM_PATH]")
 	outputDir := flag.String("output", "generated", "Output directory for generated Terraform project [env: JAMFORMER_OUTPUT]")
 	verbose := flag.Bool("verbose", false, "Show terraform command output [env: JAMFORMER_VERBOSE]")
@@ -534,6 +535,7 @@ func main() {
 	*password = os.Getenv("JAMF_PASSWORD")
 	*clientID = os.Getenv("JAMF_CLIENT_ID")
 	*clientSecret = os.Getenv("JAMF_CLIENT_SECRET")
+	*tenantID = os.Getenv("JAMF_TENANT_ID")
 	if !*verbose && os.Getenv("JAMFORMER_VERBOSE") == "true" {
 		*verbose = true
 	}
@@ -732,7 +734,7 @@ func main() {
 
 	// Interactive prompts if required fields are missing
 	// (skipped in multi-env mode — credentials are resolved per-env)
-	if !isMultiEnv && (*url == "" || authMethod == "") {
+	if !isMultiEnv && (*url == "" || authMethod == "" || (isPlatform && *tenantID == "")) {
 		if !interactive {
 			var missing []string
 			if *url == "" {
@@ -746,6 +748,9 @@ func main() {
 				} else {
 					missing = append(missing, "JAMF_USERNAME + JAMF_PASSWORD (or JAMF_CLIENT_ID + JAMF_CLIENT_SECRET)")
 				}
+			}
+			if isPlatform && *tenantID == "" {
+				missing = append(missing, "JAMF_TENANT_ID")
 			}
 			log.Fatalf("Missing required credentials in non-interactive mode: %s\nSet via environment variables (or -url flag for URL).", strings.Join(missing, ", "))
 		}
@@ -791,6 +796,10 @@ func main() {
 				}
 			}
 		}
+
+		if isPlatform && *tenantID == "" {
+			*tenantID = promptLine(reader, "Tenant ID: ")
+		}
 	}
 
 	// Normalize URL — expand shorthand instance names and ensure https:// prefix
@@ -824,6 +833,9 @@ func main() {
 	default:
 		log.Fatal("No authentication credentials provided")
 	}
+	if isPlatform && *tenantID == "" {
+		log.Fatal("Jamf Platform requires a tenant ID (JAMF_TENANT_ID)")
+	}
 
 	// Verify authentication before proceeding with interactive prompts / terraform download
 	// (skipped in multi-env mode — each env is verified during its pipeline run)
@@ -851,7 +863,7 @@ func main() {
 		} else if !interactive || *verbose {
 			fmt.Println("Verifying authentication...")
 		}
-		if err := platformclient.VerifyAuth(*url, *clientID, *clientSecret); err != nil {
+		if err := platformclient.VerifyAuth(*url, *clientID, *clientSecret, *tenantID); err != nil {
 			log.Fatalf("Authentication failed: %v", err)
 		}
 	} else if isJSC {
@@ -1031,6 +1043,7 @@ func main() {
 			BaseURL:           *url,
 			ClientID:          *clientID,
 			ClientSecret:      *clientSecret,
+			TenantID:          *tenantID,
 			SelectedResources: selectedResources,
 			SkipReferences:    *skipReferences,
 			ProviderVersion:   *providerVersionFlag,

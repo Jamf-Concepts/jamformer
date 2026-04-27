@@ -19,6 +19,7 @@ type PipelineOptions struct {
 	BaseURL           string
 	ClientID          string
 	ClientSecret      string
+	TenantID          string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
 	SelectedResources map[string]bool
 	SkipReferences    bool
 	ProviderVersion   string
@@ -56,6 +57,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		BaseURL:         opts.BaseURL,
 		ClientID:        opts.ClientID,
 		ClientSecret:    opts.ClientSecret,
+		TenantID:        opts.TenantID,
 		ProviderVersion: opts.ProviderVersion,
 	}
 	if err := importgen.GeneratePlatform(opts.OutputDir, platformCreds); err != nil {
@@ -85,6 +87,9 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		"JAMFPLATFORM_BASE_URL":      opts.BaseURL,
 		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
 		"JAMFPLATFORM_CLIENT_SECRET": opts.ClientSecret,
+	}
+	if opts.TenantID != "" {
+		platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.TenantID
 	}
 
 	if err := terraform.Query(opts.OutputDir, generatedFile, platformEnv); err != nil {
