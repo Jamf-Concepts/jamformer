@@ -3,7 +3,7 @@ module github.com/Jamf-Concepts/jamformer
 go 1.26.2
 
 require (
-	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.6.0
+	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.7.0
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.3.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.47.0
 	github.com/hashicorp/go-version v1.9.0
@@ -80,11 +80,11 @@ require (
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.21 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mholt/archives v0.1.5 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
-	github.com/minio/minlz v1.1.0 // indirect
+	github.com/minio/minlz v1.1.1 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
