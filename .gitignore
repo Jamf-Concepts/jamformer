@@ -1,0 +1,32 @@
+# Binary
+jamformer
+
+# Generated output
+generated/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.zip
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env*
+
+# OSS pre-release checklist (local only — do not commit)
+jamf-oss-developer-checklist-*.md

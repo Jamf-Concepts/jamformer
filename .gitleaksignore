@@ -1,0 +1,4 @@
+# scanner self-tests — hardcoded fixtures used to exercise the scanner
+
+secrets/scanner_test.go:139
+secrets/scanner_test.go:270

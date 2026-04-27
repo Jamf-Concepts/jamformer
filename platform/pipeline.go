@@ -1,0 +1,159 @@
+// Copyright 2026, Jamf Software LLC
+
+package platform
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/Jamf-Concepts/jamformer/importgen"
+	"github.com/Jamf-Concepts/jamformer/postprocess"
+	"github.com/Jamf-Concepts/jamformer/registry"
+	"github.com/Jamf-Concepts/jamformer/terraform"
+)
+
+// PipelineOptions holds all parameters needed to run the Jamf Platform pipeline.
+type PipelineOptions struct {
+	OutputDir         string
+	BaseURL           string
+	ClientID          string
+	ClientSecret      string
+	SelectedResources map[string]bool
+	SkipReferences    bool
+	ProviderVersion   string
+	Quiet             bool
+	Verbose           bool
+	StatusFunc        func(string, int, int) // optional callback: (message, current, total)
+}
+
+// RunPipeline executes the full Jamf Platform export pipeline:
+// generate provider config → query file → terraform init → terraform query → post-process.
+// Returns the validation fix result (may be nil) and any fatal error.
+func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
+	// Set quiet/verbose flags for sub-packages
+	Quiet = opts.Quiet
+	importgen.Quiet = opts.Quiet
+	postprocess.Quiet = opts.Quiet
+	terraform.Quiet = opts.Quiet
+	terraform.Verbose = opts.Verbose
+
+	logStep := func(format string, args ...any) {
+		if !opts.Quiet {
+			fmt.Printf(format+"\n", args...)
+		}
+	}
+	status := func(msg string) {
+		if opts.StatusFunc != nil {
+			opts.StatusFunc(msg, 0, 0)
+		}
+	}
+
+	// 1. Generate provider config + query file
+	status("generating config")
+	logStep("Generating Terraform configuration for Jamf Platform...")
+	platformCreds := &importgen.PlatformCredentials{
+		BaseURL:         opts.BaseURL,
+		ClientID:        opts.ClientID,
+		ClientSecret:    opts.ClientSecret,
+		ProviderVersion: opts.ProviderVersion,
+	}
+	if err := importgen.GeneratePlatform(opts.OutputDir, platformCreds); err != nil {
+		return nil, fmt.Errorf("generating provider config: %w", err)
+	}
+	if err := GenerateQueryFile(opts.OutputDir, opts.SelectedResources); err != nil {
+		return nil, fmt.Errorf("generating query file: %w", err)
+	}
+
+	// 2. Terraform init
+	status("initialising terraform")
+	logStep("Initialising Terraform provider...")
+	if err := terraform.Init(opts.OutputDir); err != nil {
+		return nil, fmt.Errorf("terraform init: %w", err)
+	}
+
+	// Resolve provider version from lock file for >= constraint
+	if platformCreds.ProviderVersion == "" {
+		platformCreds.ResolvedVersion = terraform.ResolvedProviderVersion(opts.OutputDir, terraform.ProviderSourceJamfPlatform)
+	}
+
+	// 3. Terraform query (list resources)
+	status("discovering")
+	logStep("Discovering and generating configuration...")
+	generatedFile := filepath.Join(opts.OutputDir, "generated.tf")
+	platformEnv := map[string]string{
+		"JAMFPLATFORM_BASE_URL":      opts.BaseURL,
+		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
+		"JAMFPLATFORM_CLIENT_SECRET": opts.ClientSecret,
+	}
+
+	if err := terraform.Query(opts.OutputDir, generatedFile, platformEnv); err != nil {
+		return nil, fmt.Errorf("terraform query: %w", err)
+	}
+
+	// Write the user-facing provider.tf (with var.* refs), variables.tf, terraform.tfvars
+	if err := importgen.FinalizePlatform(opts.OutputDir, platformCreds); err != nil {
+		return nil, fmt.Errorf("finalizing provider config: %w", err)
+	}
+
+	// 4. Rename auto-generated labels (all_0, all_1) to friendly names
+	if err := RenameLabels(generatedFile); err != nil {
+		return nil, fmt.Errorf("renaming labels: %w", err)
+	}
+
+	// 5. Populate registry from generated config for reference resolution
+	reg := registry.New()
+	if err := PopulateRegistryFromGenerated(generatedFile, reg); err != nil {
+		return nil, fmt.Errorf("populating registry: %w", err)
+	}
+
+	if !opts.Quiet {
+		counts, _ := CountResources(generatedFile)
+		for resourceType, count := range counts {
+			fmt.Printf("  Found %d %s\n", count, ResourceTypeDisplayName(resourceType))
+		}
+	}
+
+	// 6. Post-process: strip nulls, rewrite references, split into per-type files
+	status("post-processing")
+	logStep("Post-processing generated configuration...")
+	schemas, err := terraform.ProvidersSchema(opts.OutputDir)
+	if err != nil && !postprocess.Quiet {
+		fmt.Printf("  Warning: could not load provider schema, skipping null attribute removal: %v\n", err)
+	}
+	if err := postprocess.Process(opts.OutputDir, generatedFile, reg, &postprocess.ProcessOptions{
+		TypeToFileMap:   TypeToFileMap(),
+		Rules:           DefaultRules(),
+		SkipReferences:  opts.SkipReferences,
+		ProviderSchemas: schemas,
+	}); err != nil {
+		return nil, fmt.Errorf("post-processing: %w", err)
+	}
+
+	// 7. Clean up intermediate files
+	// Must happen before validation so terraform validate doesn't see duplicate
+	// resource definitions in both generated.tf and the per-type split files.
+	_ = os.Remove(generatedFile)
+	_ = os.Remove(filepath.Join(opts.OutputDir, "query.tfquery.hcl"))
+
+	// 8. Validate and auto-fix conditionally invalid attributes
+	var providerSchema *postprocess.ProviderSchema
+	if schemas != nil {
+		providerSchema = postprocess.LoadProviderSchema(schemas)
+	}
+	fixResult, err := postprocess.FixValidationErrors(opts.OutputDir, providerSchema)
+	if err != nil {
+		if !postprocess.Quiet {
+			fmt.Printf("  Warning: validation fix failed: %v\n", err)
+		}
+	} else {
+		if fixResult.Fixed > 0 {
+			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
+		}
+		for _, v := range fixResult.RequiredVars {
+			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
+		}
+	}
+
+	return fixResult, nil
+}
