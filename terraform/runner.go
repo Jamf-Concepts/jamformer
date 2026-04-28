@@ -319,7 +319,23 @@ func GenerateConfig(workDir, outputFile string, providerEnv map[string]string) e
 // silently, deadlocking the pipe. Since we only need the generated HCL file
 // (not the JSON stream), running the command directly avoids this issue.
 func Query(workDir, outputFile string, providerEnv map[string]string) error {
+	return queryInternal(workDir, outputFile, "", providerEnv)
+}
+
+// QueryWithEvents runs terraform query with -json -generate-config-out and
+// streams the JSON event log (stdout) to eventsFile. This is needed when
+// resource labels must be derived from list_resource_found events because
+// the resource block lacks a usable name attribute (e.g. when the provider
+// marks name as read-only/computed and -generate-config-out omits it).
+func QueryWithEvents(workDir, outputFile, eventsFile string, providerEnv map[string]string) error {
+	return queryInternal(workDir, outputFile, eventsFile, providerEnv)
+}
+
+func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[string]string) error {
 	args := []string{"query", "-no-color", "-generate-config-out=" + outputFile}
+	if eventsFile != "" {
+		args = append(args, "-json")
+	}
 
 	cmd := exec.CommandContext(Ctx, terraformPath, args...)
 	cmd.Dir = workDir
@@ -332,10 +348,27 @@ func Query(workDir, outputFile string, providerEnv map[string]string) error {
 	cmd.Env = cmdEnv
 
 	var stderr strings.Builder
+	var eventsOut *os.File
+	if eventsFile != "" {
+		f, err := os.Create(eventsFile)
+		if err != nil {
+			return fmt.Errorf("creating events file: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		eventsOut = f
+	}
+
 	if Verbose {
-		cmd.Stdout = os.Stdout
+		if eventsOut != nil {
+			cmd.Stdout = io.MultiWriter(eventsOut, os.Stdout)
+		} else {
+			cmd.Stdout = os.Stdout
+		}
 		cmd.Stderr = os.Stderr
 	} else {
+		if eventsOut != nil {
+			cmd.Stdout = eventsOut
+		}
 		cmd.Stderr = &stderr
 	}
 

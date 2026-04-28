@@ -78,18 +78,30 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		protectCreds.ResolvedVersion = terraform.ResolvedProviderVersion(opts.OutputDir, terraform.ProviderSourceJamfProtect)
 	}
 
-	// 3. Terraform query (list resources)
+	// 3. Terraform query (list resources). Capture the JSON event stream so
+	// we can derive labels from display_name for resource types whose name
+	// attribute is computed and therefore omitted from the generated HCL
+	// (e.g. jamfprotect_analytic_managed).
 	status("discovering")
 	logStep("Discovering and generating configuration...")
 	generatedFile := filepath.Join(opts.OutputDir, "generated.tf")
+	eventsFile := filepath.Join(opts.OutputDir, "query_events.json")
 	protectEnv := map[string]string{
 		"JAMFPROTECT_URL":           opts.URL,
 		"JAMFPROTECT_CLIENT_ID":     opts.ClientID,
 		"JAMFPROTECT_CLIENT_SECRET": opts.ClientSecret,
 	}
-	if err := terraform.Query(opts.OutputDir, generatedFile, protectEnv); err != nil {
+	if err := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, protectEnv); err != nil {
 		return nil, fmt.Errorf("terraform query: %w", err)
 	}
+	idToName, err := ParseQueryEvents(eventsFile)
+	if err != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not parse query events: %v\n", err)
+		}
+		idToName = nil
+	}
+	_ = os.Remove(eventsFile)
 
 	// 4. Write singleton import blocks (after query, so they don't interfere)
 	if err := WriteSingletonImports(opts.OutputDir, opts.SelectedResources, opts.SkipDataForwarding); err != nil {
@@ -123,7 +135,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	}
 
 	// 5. Rename auto-generated labels (all_0, all_1) to friendly names
-	if err := RenameLabels(generatedFile); err != nil {
+	if err := RenameLabelsWithEvents(generatedFile, idToName); err != nil {
 		return nil, fmt.Errorf("renaming labels: %w", err)
 	}
 

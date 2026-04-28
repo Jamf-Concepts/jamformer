@@ -1393,6 +1393,7 @@ func setupProtectRegistry() *registry.Registry {
 	reg.Register("jamfprotect_group", "1", "jamfprotect_group.all_users")
 	reg.Register("jamfprotect_analytic", "3c8a88ef-277a-4238-a695-ebaa6eee0921", "jamfprotect_analytic.macos_threat_prevention")
 	reg.Register("jamfprotect_analytic", "02e15df8-1656-41ad-8f54-9def66d88ce7", "jamfprotect_analytic.macos_malware_detection")
+	reg.Register("jamfprotect_analytic_managed", "c94af094-5ea1-11ec-be1c-0660d8e6ab1f", "jamfprotect_analytic_managed.suspicious_java_activity")
 	reg.Register("jamfprotect_analytic_set", "79e0a2a0-3af2-4e0b-8148-1f9c129bfd85", "jamfprotect_analytic_set.default")
 	reg.Register("jamfprotect_action_configuration", "abc-123", "jamfprotect_action_configuration.notify")
 	reg.Register("jamfprotect_exception_set", "def-456", "jamfprotect_exception_set.trusted_apps")
@@ -1489,6 +1490,26 @@ func TestProtectAnalyticSetAnalyticsReference(t *testing.T) {
 	}
 	if !strings.Contains(result, "jamfprotect_analytic.macos_malware_detection.id") {
 		t.Errorf("Expected analytics to reference macos_malware_detection, got:\n%s", result)
+	}
+}
+
+func TestProtectAnalyticSetManagedAnalyticReference(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_analytic_set" "test" {
+  name      = "Test Set"
+  analytics = ["3c8a88ef-277a-4238-a695-ebaa6eee0921", "c94af094-5ea1-11ec-be1c-0660d8e6ab1f"]
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_analytic_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, "jamfprotect_analytic.macos_threat_prevention.id") {
+		t.Errorf("Expected analytics to reference macos_threat_prevention, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_analytic_managed.suspicious_java_activity.id") {
+		t.Errorf("Expected analytics to reference suspicious_java_activity (managed), got:\n%s", result)
 	}
 }
 

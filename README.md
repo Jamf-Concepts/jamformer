@@ -43,7 +43,7 @@ Singleton settings imported with fixed IDs (no API discovery needed): Access Man
 
 ### Jamf Protect
 
-Action Configurations, Analytics, Analytic Sets, API Clients, Custom Prevent Lists, Exception Sets, Groups, Plans, Removable Storage Control Sets, Roles, Telemetry, Unified Logging Filters, Users, Change Management (singleton), Data Forwarding (singleton), Data Retention (singleton).
+Action Configurations, Analytics, Jamf Managed Analytics, Analytic Sets, API Clients, Custom Prevent Lists, Exception Sets, Groups, Plans, Removable Storage Control Sets, Roles, Telemetry, Unified Logging Filters, Users, Change Management (singleton), Data Forwarding (singleton), Data Retention (singleton).
 
 ### Jamf Platform
 
