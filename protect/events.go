@@ -12,7 +12,7 @@ import (
 // listResourceEvent matches the relevant fields of the
 // "list_resource_found" event emitted by `terraform query -json`.
 type listResourceEvent struct {
-	Type             string `json:"type"`
+	Type              string `json:"type"`
 	ListResourceFound struct {
 		Address      string `json:"address"`
 		DisplayName  string `json:"display_name"`
