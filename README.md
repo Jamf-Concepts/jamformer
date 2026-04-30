@@ -435,7 +435,7 @@ Protect and Platform use `terraform query`, which requires Terraform 1.14 or lat
 ## Support
 
 - **Issues and feature requests:** [https://github.com/Jamf-Concepts/jamformer/issues](https://github.com/Jamf-Concepts/jamformer/issues). Include the provider, the command you ran (redacted), the `-verbose` output, and the jamformer version (`jamformer -version`).
-- **Questions and discussion:** `#jamf` on the [MacAdmins Slack](https://macadmins.org/).
+- **Questions and discussion:** `#jamformer` on the [MacAdmins Slack](https://macadmins.org/).
 
 ## Known Limitations
 
