@@ -7,9 +7,9 @@ require (
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.3.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.47.0
 	github.com/hashicorp/go-version v1.9.0
-	github.com/hashicorp/hc-install v0.9.4
+	github.com/hashicorp/hc-install v0.9.5
 	github.com/hashicorp/hcl/v2 v2.24.0
-	github.com/hashicorp/terraform-exec v0.25.1
+	github.com/hashicorp/terraform-exec v0.25.2
 	github.com/hashicorp/terraform-json v0.27.2
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.18.1
