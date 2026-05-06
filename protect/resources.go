@@ -20,6 +20,7 @@ var Resources = []ResourceDef{
 	{FilterKey: "users", DisplayName: "Users", TFType: "jamfprotect_user", OutputFile: "users.tf"},
 	{FilterKey: "api_clients", DisplayName: "API Clients", TFType: "jamfprotect_api_client", OutputFile: "api_clients.tf"},
 	{FilterKey: "analytics", DisplayName: "Analytics", TFType: "jamfprotect_analytic", OutputFile: "analytics.tf"},
+	{FilterKey: "analytics_managed", DisplayName: "Jamf Managed Analytics", TFType: "jamfprotect_analytic_managed", OutputFile: "analytics_managed.tf"},
 	{FilterKey: "analytic_sets", DisplayName: "Analytic Sets", TFType: "jamfprotect_analytic_set", OutputFile: "analytic_sets.tf"},
 	{FilterKey: "exception_sets", DisplayName: "Exception Sets", TFType: "jamfprotect_exception_set", OutputFile: "exception_sets.tf"},
 	{FilterKey: "action_configurations", DisplayName: "Action Configurations", TFType: "jamfprotect_action_configuration", OutputFile: "action_configurations.tf"},
@@ -87,11 +88,11 @@ func DefaultRules() []postprocess.ReferenceRule {
 			TargetAttr:   "id",
 			IsList:       true,
 		},
-		// Analytic Set -> Analytic references
+		// Analytic Set -> Analytic / Managed Analytic references
 		{
 			ResourceType: "jamfprotect_analytic_set",
 			AttrName:     "analytics",
-			TargetTypes:  []string{"jamfprotect_analytic"},
+			TargetTypes:  []string{"jamfprotect_analytic", "jamfprotect_analytic_managed"},
 			TargetAttr:   "id",
 			IsList:       true,
 		},

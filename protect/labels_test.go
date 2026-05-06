@@ -256,6 +256,70 @@ resource "jamfprotect_role" "all_0" {
 	}
 }
 
+func TestRenameLabelsWithEvents_AnalyticManagedFallback(t *testing.T) {
+	// Resource block has no `name` (computed/read-only on the provider).
+	// The label must be derived from the display_name captured in the
+	// terraform query event stream, looked up by import block ID.
+	hcl := `
+resource "jamfprotect_analytic_managed" "all_0" {
+  tenant_severity = "Low"
+}
+
+resource "jamfprotect_analytic_managed" "all_1" {
+  tenant_severity = "High"
+}
+
+import {
+  identity = {
+    id = "abc-123"
+  }
+  to = jamfprotect_analytic_managed.all_0
+}
+
+import {
+  identity = {
+    id = "def-456"
+  }
+  to = jamfprotect_analytic_managed.all_1
+}
+`
+	dir := t.TempDir()
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(hcl), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	idToName := map[string]map[string]string{
+		"jamfprotect_analytic_managed": {
+			"abc-123": "SuspiciousJavaActivity",
+			"def-456": "PrivilegeEscalation",
+		},
+	}
+
+	if err := RenameLabelsWithEvents(genFile, idToName); err != nil {
+		t.Fatalf("RenameLabelsWithEvents() error: %v", err)
+	}
+
+	content, err := os.ReadFile(genFile)
+	if err != nil {
+		t.Fatalf("Failed to read result file: %v", err)
+	}
+	result := string(content)
+
+	if !strings.Contains(result, `"jamfprotect_analytic_managed" "suspiciousjavaactivity"`) {
+		t.Errorf("Expected resource renamed to suspiciousjavaactivity, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"jamfprotect_analytic_managed" "privilegeescalation"`) {
+		t.Errorf("Expected resource renamed to privilegeescalation, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_analytic_managed.suspiciousjavaactivity") {
+		t.Error("Expected import block to reference suspiciousjavaactivity")
+	}
+	if !strings.Contains(result, "jamfprotect_analytic_managed.privilegeescalation") {
+		t.Error("Expected import block to reference privilegeescalation")
+	}
+}
+
 func TestRenameLabels_MixedResourceTypes(t *testing.T) {
 	hcl := `
 resource "jamfprotect_role" "all_0" {

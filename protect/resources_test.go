@@ -10,6 +10,7 @@ func TestProtectTypeToFileMap(t *testing.T) {
 	expected := []string{
 		"jamfprotect_action_configuration",
 		"jamfprotect_analytic",
+		"jamfprotect_analytic_managed",
 		"jamfprotect_analytic_set",
 		"jamfprotect_api_client",
 		"jamfprotect_custom_prevent_list",

@@ -19,6 +19,7 @@ var Quiet bool
 var listableResourceTypes = map[string]string{
 	"action_configurations":          "jamfprotect_action_configuration",
 	"analytics":                      "jamfprotect_analytic",
+	"analytics_managed":              "jamfprotect_analytic_managed",
 	"analytic_sets":                  "jamfprotect_analytic_set",
 	"api_clients":                    "jamfprotect_api_client",
 	"custom_prevent_lists":           "jamfprotect_custom_prevent_list",

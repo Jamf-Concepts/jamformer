@@ -20,3 +20,11 @@ func nameAttrForType(resourceType string) string {
 func RenameLabels(generatedFile string) error {
 	return postprocess.RenameLabels(generatedFile, nameAttrForType)
 }
+
+// RenameLabelsWithEvents is like RenameLabels but uses display_name values
+// captured from the terraform query JSON event stream as a fallback for
+// resource types whose name attribute is not present in the generated HCL
+// (e.g. jamfprotect_analytic_managed).
+func RenameLabelsWithEvents(generatedFile string, idToName map[string]map[string]string) error {
+	return postprocess.RenameLabelsWithFallback(generatedFile, nameAttrForType, idToName)
+}
