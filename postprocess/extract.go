@@ -72,9 +72,10 @@ func extractScriptContents(body *hclwrite.Body, scriptsDir, relDir string, fileN
 
 // extractProfilePayloads pulls the payloads attribute out of a macOS configuration
 // profile resource block, writes it to a .mobileconfig file in
-// support_files/macos_configuration_profiles/, and replaces the attribute with a
-// file() function call.
-func extractProfilePayloads(body *hclwrite.Body, profilesDir, relBase string, fileNames map[string]int) error {
+// support_files/macos_configuration_profiles/ (or mobile_device_configuration_profiles/
+// for mobile device profiles), and replaces the attribute with a file() function call.
+// subDir must be the directory name under support_files (e.g. "macos_configuration_profiles").
+func extractProfilePayloads(body *hclwrite.Body, profilesDir, relBase, subDir string, fileNames map[string]int) error {
 	payloadsAttr := body.GetAttribute("payloads")
 	if payloadsAttr == nil {
 		return nil
@@ -108,7 +109,7 @@ func extractProfilePayloads(body *hclwrite.Body, profilesDir, relBase string, fi
 		return fmt.Errorf("writing profile file %s: %w", baseFileName, err)
 	}
 
-	relPath := filepath.ToSlash(filepath.Join(relBase, "macos_configuration_profiles", baseFileName))
+	relPath := filepath.ToSlash(filepath.Join(relBase, subDir, baseFileName))
 	fileRef := fmt.Sprintf(`file("${path.module}/%s")`, relPath)
 	body.SetAttributeRaw("payloads", hclwrite.Tokens{
 		{Type: hclsyntax.TokenIdent, Bytes: []byte(fileRef)},

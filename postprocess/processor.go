@@ -91,8 +91,8 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	}
 
 	// Create support_files output directories (Jamf Pro only)
-	var scriptsDir, extensionAttrsDir, profilesDir, appConfigsDir string
-	var scriptFileNames, eaFileNames, profileFileNames, appConfigFileNames map[string]int
+	var scriptsDir, extensionAttrsDir, profilesDir, mobileDeviceProfilesDir, appConfigsDir string
+	var scriptFileNames, eaFileNames, profileFileNames, mobileDeviceProfileFileNames, appConfigFileNames map[string]int
 	var tokenVars []TokenVar
 	// Build support_files base path, optionally with an env prefix for multi-env mode
 	supportBase := filepath.Join(outputDir, "support_files")
@@ -111,7 +111,11 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 		profilesDir = filepath.Join(supportBase, "macos_configuration_profiles")
 		if err := os.MkdirAll(profilesDir, 0755); err != nil {
-			return fmt.Errorf("creating profiles directory: %w", err)
+			return fmt.Errorf("creating macOS profiles directory: %w", err)
+		}
+		mobileDeviceProfilesDir = filepath.Join(supportBase, "mobile_device_configuration_profiles")
+		if err := os.MkdirAll(mobileDeviceProfilesDir, 0755); err != nil {
+			return fmt.Errorf("creating mobile device profiles directory: %w", err)
 		}
 		if err := os.MkdirAll(filepath.Join(supportBase, "device_enrollment_tokens"), 0755); err != nil {
 			return fmt.Errorf("creating ADE tokens directory: %w", err)
@@ -127,6 +131,7 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		scriptFileNames = make(map[string]int)
 		eaFileNames = make(map[string]int)
 		profileFileNames = make(map[string]int)
+		mobileDeviceProfileFileNames = make(map[string]int)
 		appConfigFileNames = make(map[string]int)
 	}
 
@@ -326,7 +331,7 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 				block.Body().SetAttributeValue("payload_validate", cty.False)
 			}
 
-			if err := extractProfilePayloads(block.Body(), profilesDir, supportRelBase, profileFileNames); err != nil {
+			if err := extractProfilePayloads(block.Body(), profilesDir, supportRelBase, "macos_configuration_profiles", profileFileNames); err != nil {
 				return fmt.Errorf("extracting profile payloads: %w", err)
 			}
 		}
@@ -342,7 +347,7 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 				block.Body().SetAttributeValue("payload_validate", cty.False)
 			}
 
-			if err := extractProfilePayloads(block.Body(), profilesDir, supportRelBase, profileFileNames); err != nil {
+			if err := extractProfilePayloads(block.Body(), mobileDeviceProfilesDir, supportRelBase, "mobile_device_configuration_profiles", mobileDeviceProfileFileNames); err != nil {
 				return fmt.Errorf("extracting mobile device profile payloads: %w", err)
 			}
 		}
