@@ -1166,7 +1166,7 @@ resource "jamfpro_macos_configuration_profile_plist" "test" {
 		body := blockBody(t, f)
 		fileNames := make(map[string]int)
 
-		if err := extractProfilePayloads(body, profilesDir, "support_files", fileNames); err != nil {
+		if err := extractProfilePayloads(body, profilesDir, "support_files", "macos_configuration_profiles", fileNames); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1199,7 +1199,7 @@ resource "jamfpro_macos_configuration_profile_plist" "test" {
 		body := blockBody(t, f)
 		fileNames := make(map[string]int)
 
-		if err := extractProfilePayloads(body, "/tmp", "support_files", fileNames); err != nil {
+		if err := extractProfilePayloads(body, "/tmp", "support_files", "macos_configuration_profiles", fileNames); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -1213,7 +1213,7 @@ resource "jamfpro_macos_configuration_profile_plist" "test" {
 		body := blockBody(t, f)
 		fileNames := make(map[string]int)
 
-		if err := extractProfilePayloads(body, "/tmp", "support_files", fileNames); err != nil {
+		if err := extractProfilePayloads(body, "/tmp", "support_files", "macos_configuration_profiles", fileNames); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -1234,7 +1234,7 @@ resource "jamfpro_macos_configuration_profile_plist" "test1" {
 }
 `)
 		body1 := blockBody(t, f1)
-		if err := extractProfilePayloads(body1, profilesDir, "support_files", fileNames); err != nil {
+		if err := extractProfilePayloads(body1, profilesDir, "support_files", "macos_configuration_profiles", fileNames); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1245,7 +1245,7 @@ resource "jamfpro_macos_configuration_profile_plist" "test2" {
 }
 `)
 		body2 := blockBody(t, f2)
-		if err := extractProfilePayloads(body2, profilesDir, "support_files", fileNames); err != nil {
+		if err := extractProfilePayloads(body2, profilesDir, "support_files", "macos_configuration_profiles", fileNames); err != nil {
 			t.Fatal(err)
 		}
 
