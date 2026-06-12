@@ -177,6 +177,19 @@ func addJamfRules(cfg *config.Config) {
 			SecretGroup: 1,
 			Keywords:    []string{"wifi_password", "shared_secret", "vpn_password", "preshared_key"},
 		},
+		{
+			// Catches vendor-specific key names (e.g. LicenseKey, BearerToken) that the
+			// keyword-based jamf-plist-password rule won't match. Scoped to app_configurations/
+			// to limit false positives from bundle IDs and other low-entropy config values.
+			// No Keywords: gitleaks' prefilter trie is built at detector creation so post-init
+			// additions have no effect; Path alone is sufficient to scope this rule.
+			RuleID:      "jamf-appconfig-high-entropy",
+			Description: "High-entropy secret under vendor-specific key in app configuration XML",
+			Regex:       regexp.MustCompile(`(?is)<key>[^<]{1,64}</key>\s*<string>([^<]{8,})</string>`),
+			SecretGroup: 1,
+			Entropy:     4.0,
+			Path:        regexp.MustCompile(`support_files[/\\]app_configurations`),
+		},
 	}
 
 	for _, rule := range jamfRules {

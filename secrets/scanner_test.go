@@ -133,6 +133,74 @@ func TestScanFindsPlistPasswordMultiline(t *testing.T) {
 	}
 }
 
+func TestScanFindsAppConfigVendorSpecificKey(t *testing.T) {
+	dir := t.TempDir()
+
+	sfDir := filepath.Join(dir, "support_files", "app_configurations")
+	if err := os.MkdirAll(sfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Vendor-specific key with a high-entropy license key value
+	content := `<dict>
+<key>LicenseKey</key>
+<string>aB3kQ9mZ2pX7nL5vW8cD1eY4rT6sU0jH</string>
+</dict>
+`
+	if err := os.WriteFile(filepath.Join(sfDir, "VendorApp.xml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := Scan(dir, true)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	if len(findings) == 0 {
+		t.Fatal("expected finding for high-entropy vendor-specific app config key")
+	}
+
+	f := findings[0]
+	if !f.InSupportFiles {
+		t.Error("expected InSupportFiles=true")
+	}
+	if f.RuleID != "jamf-appconfig-high-entropy" {
+		t.Errorf("RuleID = %q, want %q", f.RuleID, "jamf-appconfig-high-entropy")
+	}
+}
+
+func TestScanSkipsAppConfigLowEntropyValues(t *testing.T) {
+	dir := t.TempDir()
+
+	sfDir := filepath.Join(dir, "support_files", "app_configurations")
+	if err := os.MkdirAll(sfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bundle ID and server URL — low-entropy, should not be flagged
+	content := `<dict>
+<key>BundleIdentifier</key>
+<string>com.company.myapp</string>
+<key>ServerURL</key>
+<string>https://mdm.example.com</string>
+</dict>
+`
+	if err := os.WriteFile(filepath.Join(sfDir, "Config.xml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := Scan(dir, true)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	for _, f := range findings {
+		if f.RuleID == "jamf-appconfig-high-entropy" {
+			t.Errorf("unexpected high-entropy finding for low-entropy config value: secret=%q", f.Secret)
+		}
+	}
+}
+
 func TestScanFindsPrivateKey(t *testing.T) {
 	dir := t.TempDir()
 
