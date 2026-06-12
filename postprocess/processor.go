@@ -319,6 +319,22 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 
 		if isJamfPro && resourceType == "jamfpro_macos_configuration_profile_plist" {
+			// Skip vendor-managed or signed profiles that cannot be re-applied via the API.
+			if payloadsAttr := block.Body().GetAttribute("payloads"); payloadsAttr != nil {
+				if payload := extractFullStringValue(payloadsAttr); payload != "" {
+					if skip, reason := ShouldSkipProfile(payload); skip {
+						profileName := labels[1]
+						if nameAttr := block.Body().GetAttribute("name"); nameAttr != nil {
+							profileName = ExtractStringValue(nameAttr)
+						}
+						fmt.Printf("  Skipping profile %q: %s\n", profileName, reason)
+						addr := resourceType + "." + labels[1]
+						_ = terraform.RemoveImportBlock(outputDir, addr)
+						continue
+					}
+				}
+			}
+
 			// Fix redeploy_on_update — required attribute that the provider's
 			// Read returns as null during generate-config-out
 			if attr := block.Body().GetAttribute("redeploy_on_update"); attr == nil || isNullValue(attr) {
@@ -337,6 +353,22 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 
 		if isJamfPro && resourceType == "jamfpro_mobile_device_configuration_profile_plist" {
+			// Skip vendor-managed or signed profiles that cannot be re-applied via the API.
+			if payloadsAttr := block.Body().GetAttribute("payloads"); payloadsAttr != nil {
+				if payload := extractFullStringValue(payloadsAttr); payload != "" {
+					if skip, reason := ShouldSkipProfile(payload); skip {
+						profileName := labels[1]
+						if nameAttr := block.Body().GetAttribute("name"); nameAttr != nil {
+							profileName = ExtractStringValue(nameAttr)
+						}
+						fmt.Printf("  Skipping profile %q: %s\n", profileName, reason)
+						addr := resourceType + "." + labels[1]
+						_ = terraform.RemoveImportBlock(outputDir, addr)
+						continue
+					}
+				}
+			}
+
 			if attr := block.Body().GetAttribute("redeploy_on_update"); attr == nil || isNullValue(attr) {
 				block.Body().SetAttributeValue("redeploy_on_update", cty.StringVal("Newly Assigned"))
 			}
