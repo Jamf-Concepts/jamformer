@@ -6,11 +6,54 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
+
+// vendorPayloadIDPrefixes lists PayloadIdentifier prefixes that identify
+// vendor-managed profiles. These profiles contain short-lived certificates
+// and service tokens bound to a specific Jamf tenant; re-applying stale
+// exported versions would break the originating product's functionality.
+//
+// Detection uses PayloadIdentifier (not PayloadOrganization) because:
+//   - Jamf Protect uses com.jamf.protect.* in its programmatically-created profiles.
+//   - Jamf Security Cloud / Jamf Trust use com.jamf.trust.* in their signed profiles
+//     but carry the customer's org name at the top level, so org-name matching
+//     would give false negatives.
+var vendorPayloadIDPrefixes = []string{
+	"com.jamf.protect.",
+	"com.jamf.trust.",
+}
+
+// rePayloadID matches any PayloadIdentifier value in an Apple plist XML.
+var rePayloadID = regexp.MustCompile(`(?i)<key>PayloadIdentifier</key>\s*<string>([^<]+)</string>`)
+
+// ShouldSkipProfile reports whether a configuration profile should be excluded
+// from the Terraform output. Returns (true, reason) for:
+//   - Jamf Protect profiles: any PayloadIdentifier starts with com.jamf.protect.*
+//   - Jamf Security Cloud / Jamf Trust profiles: any PayloadIdentifier starts with com.jamf.trust.*
+//   - Non-XML payloads: signed binary profiles stored as base64-encoded DER.
+func ShouldSkipProfile(payload string) (bool, string) {
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "" {
+		return false, ""
+	}
+	if !strings.HasPrefix(trimmed, "<?xml") && !strings.HasPrefix(trimmed, "<plist") {
+		return true, "signed profile (non-XML payload)"
+	}
+	for _, m := range rePayloadID.FindAllStringSubmatch(trimmed, -1) {
+		id := strings.ToLower(strings.TrimSpace(m[1]))
+		for _, prefix := range vendorPayloadIDPrefixes {
+			if strings.HasPrefix(id, prefix) {
+				return true, "vendor-managed profile (PayloadIdentifier: " + m[1] + ")"
+			}
+		}
+	}
+	return false, ""
+}
 
 // extractScriptContents pulls the script_contents attribute out of a resource
 // block, writes it to a file in the given directory, and replaces the attribute

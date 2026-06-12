@@ -502,6 +502,13 @@ func countImportBlocks(workDir string) (int, error) {
 	return count, nil
 }
 
+// RemoveImportBlock removes the import block for the given resource address
+// from the *_import.tf files in workDir. Used by post-processing to clean up
+// import blocks for resources excluded from the output (e.g. vendor-managed profiles).
+func RemoveImportBlock(workDir, resourceAddr string) error {
+	return removeImportBlock(workDir, resourceAddr)
+}
+
 // removeImportBlock removes the import block for a given resource address
 // from the import files in workDir.
 func removeImportBlock(workDir, resourceAddr string) error {
