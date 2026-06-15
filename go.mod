@@ -14,7 +14,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.18.1
 	github.com/zricethezav/gitleaks/v8 v8.30.1
-	golang.org/x/term v0.43.0
+	golang.org/x/term v0.44.0
 )
 
 require (
