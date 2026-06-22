@@ -3,7 +3,7 @@ module github.com/Jamf-Concepts/jamformer
 go 1.26.4
 
 require (
-	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.8.0
+	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.10.0
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.6.1
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.49.0
 	github.com/hashicorp/go-version v1.9.0
@@ -14,7 +14,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.18.1
 	github.com/zricethezav/gitleaks/v8 v8.30.1
-	golang.org/x/term v0.43.0
+	golang.org/x/term v0.44.0
 )
 
 require (
@@ -112,14 +112,14 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
