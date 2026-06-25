@@ -12,25 +12,20 @@ import (
 // Quiet suppresses progress messages.
 var Quiet bool
 
-// listableResourceTypes maps filter keys to Terraform resource type names.
-var listableResourceTypes = map[string]string{
-	"blueprints":            "jamfplatform_blueprints_blueprint",
-	"compliance_benchmarks": "jamfplatform_cbengine_benchmark",
-	"device_groups":         "jamfplatform_device_group",
-}
-
 // GenerateQueryFile writes a .tfquery.hcl file with list blocks for selected
-// resource types. If selectedResources is nil, all resource types are included.
+// listable resource types. If selectedResources is nil, all listable resource
+// types are included. List blocks are emitted in Resources-table order for
+// deterministic output.
 func GenerateQueryFile(outputDir string, selectedResources map[string]bool) error {
 	var queryLines []string
-	for filterKey, resourceType := range listableResourceTypes {
-		if selectedResources != nil && !selectedResources[filterKey] {
+	for _, r := range ListableResources() {
+		if selectedResources != nil && !selectedResources[r.FilterKey] {
 			continue
 		}
 		queryLines = append(queryLines, fmt.Sprintf(`list %q "all" {
   provider = jamfplatform
   limit    = 10000
-}`, resourceType))
+}`, r.TFType))
 	}
 
 	if len(queryLines) > 0 {

@@ -404,20 +404,20 @@ func printResourceList(provider string) {
 	showJSC := provider == "" || provider == "jsc"
 
 	if !showPro && !showProtect && !showPlatform && !showJSC {
-		fmt.Fprintf(os.Stderr, "Unknown provider %q. Valid providers: jamfpro, jamfprotect, jamfplatform, jsc\n", provider)
+		fmt.Fprintf(os.Stderr, "Unknown provider %q. Valid providers: jamfplatform, jamfprotect, jsc, jamfpro\n", provider)
 		os.Exit(1)
 	}
 
-	if showPro {
-		fmt.Println("Jamf Pro (jamfpro):")
-		sorted := slices.Clone(pro.Resources)
-		slices.SortFunc(sorted, func(a, b pro.ResourceDef) int {
+	if showPlatform {
+		fmt.Println("Jamf Platform (jamfplatform) [default]:")
+		sorted := slices.Clone(platform.Resources)
+		slices.SortFunc(sorted, func(a, b platform.ResourceDef) int {
 			return strings.Compare(a.FilterKey, b.FilterKey)
 		})
 		for _, r := range sorted {
 			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
 		}
-		if showProtect || showPlatform || showJSC {
+		if showProtect || showJSC || showPro {
 			fmt.Println()
 		}
 	}
@@ -430,20 +430,7 @@ func printResourceList(provider string) {
 		for _, r := range sorted {
 			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
 		}
-		if showPlatform || showJSC {
-			fmt.Println()
-		}
-	}
-	if showPlatform {
-		fmt.Println("Jamf Platform (jamfplatform):")
-		sorted := slices.Clone(platform.Resources)
-		slices.SortFunc(sorted, func(a, b platform.ResourceDef) int {
-			return strings.Compare(a.FilterKey, b.FilterKey)
-		})
-		for _, r := range sorted {
-			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
-		}
-		if showJSC {
+		if showJSC || showPro {
 			fmt.Println()
 		}
 	}
@@ -451,6 +438,19 @@ func printResourceList(provider string) {
 		fmt.Println("JSC - Jamf Security Cloud (jsc):")
 		sorted := slices.Clone(jsc.Resources)
 		slices.SortFunc(sorted, func(a, b jsc.ResourceDef) int {
+			return strings.Compare(a.FilterKey, b.FilterKey)
+		})
+		for _, r := range sorted {
+			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
+		}
+		if showPro {
+			fmt.Println()
+		}
+	}
+	if showPro {
+		fmt.Println("Jamf Pro (jamfpro) - community provider by Deployment Theory:")
+		sorted := slices.Clone(pro.Resources)
+		slices.SortFunc(sorted, func(a, b pro.ResourceDef) int {
 			return strings.Compare(a.FilterKey, b.FilterKey)
 		})
 		for _, r := range sorted {
@@ -490,7 +490,7 @@ func main() {
 	excludeFlag := flag.String("exclude-resources", "", "Space-separated list of resource types to exclude (see -help filtering) [env: JAMFORMER_EXCLUDE]")
 	skipReferences := flag.Bool("skip-references", false, "Skip cross-resource reference resolution (leave raw ID values) [env: JAMFORMER_SKIP_REFERENCES]")
 	skipImportBlocks := flag.Bool("skip-import-blocks", false, "Exclude import blocks from output (for applying to a new instance) [env: JAMFORMER_SKIP_IMPORT_BLOCKS]")
-	providerFlag := flag.String("provider", "", "Terraform provider: jamfpro (default), jamfprotect, jamfplatform, or jsc [env: JAMFORMER_PROVIDER]")
+	providerFlag := flag.String("provider", "", "Terraform provider: jamfplatform (default), jamfprotect, jsc, or jamfpro [env: JAMFORMER_PROVIDER]")
 	providerVersionFlag := flag.String("provider-version", "", "Pin a specific provider version (see -help provider-version) [env: JAMFORMER_PROVIDER_VERSION]")
 	allowDevOverrides := flag.Bool("allow-dev-overrides", false, "Allow Terraform provider dev_overrides from CLI config (see -help dev-overrides) [env: JAMFORMER_ALLOW_DEV_OVERRIDES]")
 	compactMode := flag.Bool("compact", false, "Consolidate simple resource types into for_each patterns (see -help compact) [env: JAMFORMER_COMPACT]")
@@ -597,7 +597,7 @@ func main() {
 
 	// Validate provider flag if explicitly set
 	if *providerFlag != "" && *providerFlag != "jamfpro" && *providerFlag != "jamfprotect" && *providerFlag != "jamfplatform" && *providerFlag != "jsc" {
-		log.Fatalf("Invalid provider %q. Valid options: jamfpro, jamfprotect, jamfplatform, jsc", *providerFlag)
+		log.Fatalf("Invalid provider %q. Valid options: jamfplatform, jamfprotect, jsc, jamfpro", *providerFlag)
 	}
 
 	// Parse and validate multi-env flag
@@ -642,25 +642,25 @@ func main() {
 			printSplash()
 			splashShown = true
 			reader := bufio.NewReader(os.Stdin)
-			fmt.Printf("  %s[P]%s Jamf Pro %s(default)%s\n", uBlue, uReset, uDim, uReset)
+			fmt.Printf("  %s[L]%s Jamf Platform %s(default)%s\n", uCyan, uReset, uDim, uReset)
 			fmt.Printf("  %s[T]%s Jamf Protect\n", uPurple, uReset)
-			fmt.Printf("  %s[L]%s Jamf Platform\n", uCyan, uReset)
 			fmt.Printf("  %s[S]%s JSC (Jamf Security Cloud)\n", uYellow, uReset)
+			fmt.Printf("  %s[P]%s Jamf Pro %s(community provider by Deployment Theory)%s\n", uBlue, uReset, uDim, uReset)
 			fmt.Println()
-			choice := promptLine(reader, fmt.Sprintf("%sChoose provider%s %s(P/t/l/s)%s: ", uBold, uReset, uDim, uReset))
+			choice := promptLine(reader, fmt.Sprintf("%sChoose provider%s %s(L/t/s/p)%s: ", uBold, uReset, uDim, uReset))
 			choice = strings.ToLower(strings.TrimSpace(choice))
 			switch choice {
 			case "t":
 				*providerFlag = "jamfprotect"
-			case "l":
-				*providerFlag = "jamfplatform"
 			case "s":
 				*providerFlag = "jsc"
-			default:
+			case "p":
 				*providerFlag = "jamfpro"
+			default:
+				*providerFlag = "jamfplatform"
 			}
 		} else {
-			*providerFlag = "jamfpro"
+			*providerFlag = "jamfplatform"
 		}
 	}
 

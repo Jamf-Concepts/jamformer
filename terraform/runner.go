@@ -91,10 +91,12 @@ func (pw *progressWriter) Write(p []byte) (n int, err error) {
 }
 
 // TerraformVersionConstraint is the version constraint for the Terraform binary
-// that jamformer downloads. It pins to the latest 1.14.x release.
-const TerraformVersionConstraint = "~> 1.14.0"
+// that jamformer downloads. It pins to the latest 1.15.x release — 1.15 fixes
+// list-resource `-generate-config-out` config-generation panics on null nested
+// attributes that 1.14 hit with the jamfplatform_pro_* surface.
+const TerraformVersionConstraint = "~> 1.15.0"
 
-// EnsureTerraform downloads the latest Terraform 1.14.x binary to a temporary
+// EnsureTerraform downloads the latest Terraform 1.15.x binary to a temporary
 // directory and returns the path. The binary is placed in
 // os.TempDir()/jamformer-terraform/ so it persists across runs within the same
 // OS session but is cleaned up on reboot.
@@ -106,9 +108,22 @@ func EnsureTerraform() (string, error) {
 	}
 	cachedPath := filepath.Join(cache, binaryName)
 
-	// Reuse if already downloaded this session
+	constraints, err := goversion.NewConstraint(TerraformVersionConstraint)
+	if err != nil {
+		return "", fmt.Errorf("parsing terraform version constraint: %w", err)
+	}
+
+	// Reuse the cached binary only if it satisfies the version constraint.
+	// A binary cached under an older constraint (e.g. 1.14.x) must be replaced
+	// after a constraint bump, so we re-download when it no longer matches.
 	if _, err := os.Stat(cachedPath); err == nil {
-		return cachedPath, nil
+		if cachedTerraformSatisfies(cachedPath, cache, constraints) {
+			return cachedPath, nil
+		}
+		if !Quiet {
+			fmt.Println("Cached Terraform no longer satisfies the required version; re-downloading...")
+		}
+		_ = os.Remove(cachedPath)
 	}
 
 	if !Quiet {
@@ -116,11 +131,6 @@ func EnsureTerraform() (string, error) {
 	}
 	if err := os.MkdirAll(cache, 0755); err != nil {
 		return "", fmt.Errorf("creating temp directory: %w", err)
-	}
-
-	constraints, err := goversion.NewConstraint(TerraformVersionConstraint)
-	if err != nil {
-		return "", fmt.Errorf("parsing terraform version constraint: %w", err)
 	}
 
 	installer := &releases.LatestVersion{
@@ -141,6 +151,21 @@ func EnsureTerraform() (string, error) {
 		fmt.Printf("Terraform installed to %s\n", path)
 	}
 	return path, nil
+}
+
+// cachedTerraformSatisfies reports whether the terraform binary at binPath
+// reports a version satisfying the given constraints. Any error (unreadable
+// binary, version probe failure) returns false so the caller re-downloads.
+func cachedTerraformSatisfies(binPath, workDir string, constraints goversion.Constraints) bool {
+	tf, err := tfexec.NewTerraform(workDir, binPath)
+	if err != nil {
+		return false
+	}
+	v, _, err := tf.Version(Ctx, false)
+	if err != nil || v == nil {
+		return false
+	}
+	return constraints.Check(v)
 }
 
 // newTF creates a tfexec.Terraform instance for the given work directory.

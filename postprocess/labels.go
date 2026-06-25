@@ -13,6 +13,13 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
+// LabelComposer derives the pre-sanitization friendly name for a resource block.
+// resourceType is the TF type; body is the resource block body; idLookup returns
+// the import-block ID for this resource (for name fallback). Returning "" skips
+// renaming this resource. The returned name is sanitized and de-duplicated by the
+// caller's naming.Tracker.
+type LabelComposer func(resourceType string, body *hclwrite.Body, idLookup func() string) string
+
 // RenameLabels rewrites auto-generated labels (like "all_0") in the generated
 // HCL file to friendly names derived from resource attributes. It also updates
 // the corresponding import blocks' "to" attributes to match.
@@ -30,6 +37,27 @@ func RenameLabels(generatedFile string, nameAttrFn func(string) string) error {
 // HCL produced by terraform query / -generate-config-out (e.g. Jamf Protect's
 // jamfprotect_analytic_managed).
 func RenameLabelsWithFallback(generatedFile string, nameAttrFn func(string) string, idToName map[string]map[string]string) error {
+	compose := func(resourceType string, body *hclwrite.Body, idLookup func() string) string {
+		var name string
+		if attr := body.GetAttribute(nameAttrFn(resourceType)); attr != nil {
+			name = ExtractStringValue(attr)
+		}
+		if name == "" && idToName != nil {
+			if byID, ok := idToName[resourceType]; ok {
+				name = byID[idLookup()]
+			}
+		}
+		return name
+	}
+	return RenameLabelsWithComposer(generatedFile, compose)
+}
+
+// RenameLabelsWithComposer is the most general label-renaming entry point: it
+// derives each resource's friendly name via the supplied LabelComposer, which
+// can inspect the whole resource body (e.g. to fold device_type into a
+// jamfplatform_device_group label so computer and mobile groups that share a
+// name do not collide).
+func RenameLabelsWithComposer(generatedFile string, compose LabelComposer) error {
 	src, err := os.ReadFile(generatedFile)
 	if err != nil {
 		return fmt.Errorf("reading generated file: %w", err)
@@ -74,18 +102,9 @@ func RenameLabelsWithFallback(generatedFile string, nameAttrFn func(string) stri
 		oldLabel := labels[1]
 		oldAddress := fmt.Sprintf("%s.%s", resourceType, oldLabel)
 
-		var name string
-		nameAttr := nameAttrFn(resourceType)
-		if attr := block.Body().GetAttribute(nameAttr); attr != nil {
-			name = ExtractStringValue(attr)
-		}
-		if name == "" && idToName != nil {
-			if byID, ok := idToName[resourceType]; ok {
-				if id, ok := addrToImportID[oldAddress]; ok {
-					name = byID[id]
-				}
-			}
-		}
+		name := compose(resourceType, block.Body(), func() string {
+			return addrToImportID[oldAddress]
+		})
 		if name == "" {
 			continue
 		}

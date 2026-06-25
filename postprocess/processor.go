@@ -34,6 +34,14 @@ type ProcessOptions struct {
 	IconURLs map[string]string
 	// EnrollmentCustomizationImageFiles maps enrollment customization Jamf ID -> relative path.
 	EnrollmentCustomizationImageFiles map[string]string
+	// ExtractSpecs declaratively drives string-attribute extraction to support
+	// files (scripts, profile payloads, app configs). Used by providers whose
+	// resources expose these as nested object attributes (e.g. jamfplatform).
+	// The jamfpro pipeline uses dedicated inline extraction instead.
+	ExtractSpecs []ExtractSpec
+	// SupportDirs lists extra directories (relative to support_files/) to create
+	// as recommended locations for user-supplied files (e.g. token directories).
+	SupportDirs []string
 	// SkipReferences disables cross-resource reference resolution, leaving raw ID values.
 	SkipReferences bool
 	// SplitByCategory splits categorised resource types into per-category output files.
@@ -141,17 +149,39 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		supportRelBase = filepath.Join("support_files", opts.SupportFilesPrefix)
 	}
 
+	// Spec-driven extraction (e.g. jamfplatform): create the output subdirectory
+	// for each spec plus any recommended SupportDirs, and track collision-safe
+	// filenames per subdirectory.
+	specFileNames := make(map[string]map[string]int) // OutputSubdir -> (filename -> count)
+	for _, spec := range opts.ExtractSpecs {
+		if specFileNames[spec.OutputSubdir] == nil {
+			specFileNames[spec.OutputSubdir] = make(map[string]int)
+			if err := os.MkdirAll(filepath.Join(supportBase, spec.OutputSubdir), 0755); err != nil {
+				return fmt.Errorf("creating %s directory: %w", spec.OutputSubdir, err)
+			}
+		}
+	}
+	for _, dir := range opts.SupportDirs {
+		if err := os.MkdirAll(filepath.Join(supportBase, dir), 0755); err != nil {
+			return fmt.Errorf("creating %s directory: %w", dir, err)
+		}
+	}
+
 	// Group resource blocks by type
 	fileMap := make(map[string]*hclwrite.File)
 	for typeName := range typeMap {
 		fileMap[typeName] = hclwrite.NewEmptyFile()
 	}
 
-	// Separate file map for import blocks (Protect generates these in generated.tf)
+	// Separate file map for import blocks (Protect/Platform generate these in
+	// generated.tf). Import blocks are collected and written after the resource
+	// pass so we can drop imports whose target resource was skipped.
 	importFileMap := make(map[string]*hclwrite.File)
 	for typeName := range typeMap {
 		importFileMap[typeName] = hclwrite.NewEmptyFile()
 	}
+	var pendingImports []*hclwrite.Block  // import blocks awaiting skip filtering
+	skippedAddrs := make(map[string]bool) // resource addresses dropped by a skip rule
 
 	// Count resources per type for progress output.
 	typeCounts := make(map[string]int)
@@ -166,20 +196,10 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 	processedTypes := make(map[string]bool)
 	for _, block := range f.Body().Blocks() {
-		// Handle import blocks — extract resource type from "to" attribute
-		// and place in a separate import file (used by Protect's terraform query output).
+		// Collect import blocks; they are written after the resource pass so
+		// imports targeting a skipped resource can be dropped.
 		if block.Type() == "import" {
-			toAttr := block.Body().GetAttribute("to")
-			if toAttr != nil {
-				toBytes := strings.TrimSpace(string(toAttr.Expr().BuildTokens(nil).Bytes()))
-				if parts := strings.SplitN(toBytes, ".", 2); len(parts) >= 1 {
-					resourceType := parts[0]
-					if outFile, ok := importFileMap[resourceType]; ok {
-						outFile.Body().AppendNewline()
-						appendBlock(outFile.Body(), block)
-					}
-				}
-			}
+			pendingImports = append(pendingImports, block)
 			continue
 		}
 
@@ -272,6 +292,34 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			if categoryLabel == "" {
 				categoryLabel = "uncategorised"
 			}
+		}
+
+		// Spec-driven skip pass: drop vendor-managed/signed resources entirely.
+		skipResource := false
+		for _, spec := range opts.ExtractSpecs {
+			if spec.ResourceType != resourceType || spec.SkipFn == nil {
+				continue
+			}
+			if skip, reason := spec.SkipFn(specContent(block.Body(), spec)); skip {
+				nameAttrName := spec.NameAttr
+				if nameAttrName == "" {
+					nameAttrName = "name"
+				}
+				name := labels[1]
+				if nm := readLeafString(block.Body(), nil, spec.NameAttrPath, nameAttrName); nm != "" {
+					name = nm
+				}
+				if !Quiet {
+					fmt.Printf("  Skipping %s %q: %s\n", resourceType, name, reason)
+				}
+				_ = terraform.RemoveImportBlock(outputDir, resourceType+"."+labels[1])
+				skippedAddrs[resourceType+"."+labels[1]] = true
+				skipResource = true
+				break
+			}
+		}
+		if skipResource {
+			continue
 		}
 
 		// Jamf Pro-specific resource processing (script/profile/package extraction)
@@ -462,6 +510,19 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			}
 		}
 
+		// Spec-driven extraction pass (e.g. jamfplatform): write nested string
+		// attributes to support files and replace them with file() references.
+		for _, spec := range opts.ExtractSpecs {
+			if spec.ResourceType != resourceType {
+				continue
+			}
+			absDir := filepath.Join(supportBase, spec.OutputSubdir)
+			relDir := filepath.Join(supportRelBase, spec.OutputSubdir)
+			if _, err := extractStringAttr(block.Body(), spec, absDir, relDir, specFileNames[spec.OutputSubdir]); err != nil {
+				return fmt.Errorf("extracting %s for %s: %w", spec.AttrName, resourceType, err)
+			}
+		}
+
 		// Append to the appropriate file (per-category or per-type)
 		if catSplitTypes[resourceType] {
 			key := resourceType + ":" + categoryLabel
@@ -497,6 +558,27 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 		if err := os.WriteFile(filepath.Join(outputDir, filename), content, 0644); err != nil {
 			return fmt.Errorf("writing %s: %w", filename, err)
+		}
+	}
+
+	// Distribute collected import blocks into per-type import files, dropping any
+	// whose target resource was skipped (e.g. a vendor-managed profile).
+	for _, block := range pendingImports {
+		toAttr := block.Body().GetAttribute("to")
+		if toAttr == nil {
+			continue
+		}
+		toBytes := strings.TrimSpace(string(toAttr.Expr().BuildTokens(nil).Bytes()))
+		if skippedAddrs[toBytes] {
+			continue
+		}
+		parts := strings.SplitN(toBytes, ".", 2)
+		if len(parts) < 1 {
+			continue
+		}
+		if outFile, ok := importFileMap[parts[0]]; ok {
+			outFile.Body().AppendNewline()
+			appendBlock(outFile.Body(), block)
 		}
 	}
 

@@ -26,10 +26,12 @@ A CLI tool that converts a Jamf instance into a structured Terraform project. It
 
 | Provider | Flag | Auth | Discovery Method |
 |---|---|---|---|
-| [jamfpro](https://github.com/deploymenttheory/terraform-provider-jamfpro) (default) | `-provider jamfpro` | Basic auth or OAuth2 | Jamf Pro API via SDK |
+| [jamfplatform](https://github.com/Jamf-Concepts/terraform-provider-jamfplatform) **(default)** | `-provider jamfplatform` | OAuth2 only | `terraform query` (Terraform 1.14+) |
 | [jamfprotect](https://github.com/Jamf-Concepts/terraform-provider-jamfprotect) | `-provider jamfprotect` | OAuth2 only | `terraform query` (Terraform 1.14+) |
-| [jamfplatform](https://github.com/Jamf-Concepts/terraform-provider-jamfplatform) | `-provider jamfplatform` | OAuth2 only | `terraform query` (Terraform 1.14+) |
 | [jsc](https://github.com/Jamf-Concepts/terraform-provider-jsctfprovider) | `-provider jsc` | Local account or Jamf ID | Terraform data sources |
+| [jamfpro](https://github.com/deploymenttheory/terraform-provider-jamfpro) — community provider by Deployment Theory | `-provider jamfpro` | Basic auth or OAuth2 | Jamf Pro API via SDK |
+
+> The `jamfplatform` provider now federates the full Jamf Pro surface (`jamfplatform_pro_*`) in addition to native Platform Services resources (blueprints, compliance benchmarks, device groups), and is the default. The `jamfpro` provider is the community-maintained provider by Deployment Theory and remains fully supported.
 
 ## Supported Resources
 
@@ -62,7 +64,7 @@ Singleton: Secure Policy.
 - **Jamf Protect / Platform:** An API client (OAuth2) with appropriate privileges. Requires Terraform 1.14+.
 - **JSC:** A local account or Jamf ID with access to Jamf Security Cloud (radar.wandera.com). SSO/SAML accounts are not supported.
 
-Terraform 1.14.x is automatically downloaded if not already installed (cached in a temp directory). Use `-terraform-path` to override with a pre-installed binary.
+Terraform 1.15.x is automatically downloaded if not already installed (cached in a temp directory). Use `-terraform-path` to override with a pre-installed binary.
 
 ## Installation
 
@@ -128,7 +130,7 @@ jamformer needs **Read** on every object type it is asked to discover. It perfor
 
 | Flag | Env Var | Description | Default |
 |---|---|---|---|
-| `-provider` | `JAMFORMER_PROVIDER` | Provider: `jamfpro`, `jamfprotect`, `jamfplatform`, or `jsc` | `jamfpro` |
+| `-provider` | `JAMFORMER_PROVIDER` | Provider: `jamfplatform`, `jamfprotect`, `jsc`, or `jamfpro` | `jamfplatform` |
 | `-url` | `JAMF_URL` | Jamf instance URL | |
 | `-include-resources` | `JAMFORMER_RESOURCES` | Space-separated resource types to include | all |
 | `-exclude-resources` | `JAMFORMER_EXCLUDE` | Space-separated resource types to exclude | |

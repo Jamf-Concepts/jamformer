@@ -21,12 +21,12 @@ golangci-lint run ./...         # Run linter
 
 ## Architecture
 
-jamformer is a CLI tool that converts a Jamf instance into a structured Terraform project. It supports four providers, selected via `-provider` (default: `jamfpro`):
+jamformer is a CLI tool that converts a Jamf instance into a structured Terraform project. It supports four providers, selected via `-provider` (default: `jamfplatform`):
 
-- **Jamf Pro** — Uses the Jamf Pro API for resource discovery, `terraform plan -generate-config-out` for HCL generation via the `deploymenttheory/jamfpro` provider, then post-processes the output.
+- **Jamf Platform** (default) — Uses `terraform query` (Terraform 1.14+) with `list` blocks for resource discovery and HCL generation via the `Jamf-Concepts/jamfplatform` provider, then post-processes the output. As of provider v0.18.x this federates the **full Jamf Pro surface** as `jamfplatform_pro_*` (63 listable + ~27 singleton settings) alongside the native Platform Services resources (blueprints, compliance benchmarks, device groups).
 - **Jamf Protect** — Uses `terraform query` (Terraform 1.14+) with `list` blocks for resource discovery and HCL generation via the `Jamf-Concepts/jamfprotect` provider, then post-processes the output.
-- **Jamf Platform** — Uses `terraform query` (Terraform 1.14+) with `list` blocks for resource discovery and HCL generation via the `Jamf-Concepts/jamfplatform` provider, then post-processes the output.
 - **JSC (Jamf Service Connection)** — Uses `terraform apply` against data sources for resource discovery (the JSC provider does not implement list resources), then `terraform plan -generate-config-out` for HCL generation, then post-processes the output. Basic auth only (username/password).
+- **Jamf Pro** — The community-maintained `deploymenttheory/jamfpro` provider. Uses the Jamf Pro API for resource discovery, `terraform plan -generate-config-out` for HCL generation, then post-processes the output.
 
 ### Jamf Pro Pipeline (pro/pipeline.go → RunPipeline)
 
@@ -62,10 +62,13 @@ jamformer is a CLI tool that converts a Jamf instance into a structured Terrafor
 ### Jamf Platform Pipeline (platform/pipeline.go → RunPipeline)
 
 1. **importgen** — Writes `provider.tf`, `variables.tf`, `terraform.tfvars` for the Jamf Platform provider (OAuth2 only, uses `base_url`)
-2. **platform** — Generates `query.tfquery.hcl` with `list {}` blocks for 3 resource types (blueprints, compliance benchmarks, device groups)
-3. **terraform** — Runs `terraform init`, then `terraform query -generate-config-out=generated.tf` via tfexec
-4. **platform** — Renames auto-generated labels to friendly names (benchmarks use `title`, others use `name`), then populates **registry** from import blocks
-5. **postprocess** — Strips null attributes, rewrites literal IDs to cross-resource Terraform references (blueprint→device group, benchmark→device group), splits into per-type files
+2. **platform** — Generates `query.tfquery.hcl` with `list {}` blocks for all listable resource types (3 native + 60 `jamfplatform_pro_*`), derived from the `Resources` table via `ListableResources()`
+3. **terraform** — Runs `terraform init`, then `terraform query -generate-config-out=generated.tf` (with a JSON event log captured via `QueryWithEvents`)
+4. **platform** — `WriteSingletonImports()` writes `singletons_import.tf` (import id `singleton`) for the ~27 settings resources, then `terraform plan -generate-config-out` materialises their config and merges it into `generated.tf`
+5. **platform** — Renames auto-generated labels to friendly names via `RenameLabelsWithComposer` (benchmarks use `title`, others `name`; `jamfplatform_device_group` folds `device_type` into the label so computer/mobile groups that share a name don't collide), populates **registry** from import blocks, and registers synthetic `jamfplatform_device_group#computer` / `#mobile` subtypes keyed by `jamf_pro_id` (recovered from query events; computed so absent from generated HCL) so classic scope `computer_group_ids` / `mobile_device_group_ids` resolve to `.jamf_pro_id`
+6. **postprocess** — Strips null attributes; rewrites literal IDs to cross-resource references through **nested object attributes** (`scope = { targets = { ... } }`, `general = { category_id }`, list-of-objects payloads) using `ReferenceRule.AttrPath`/`ElementAttr`; extracts `general.payloads` to `.mobileconfig`, `script_contents`/`script` to scripts, and `app_configuration.preferences` to `.xml` via `ProcessOptions.ExtractSpecs`; skips vendor-managed/signed profiles; splits into per-type files
+
+Note: the `jamfplatform_pro_*` surface uses plugin-framework **nested attributes** (object expressions), not HCL nested blocks. The reference-rewriting engine (`postprocess/rewrite.go` `withLeafBody`) and the file-extraction engine (`postprocess/extractspec.go`) traverse these by re-parsing object-expression bytes, reusing the idiom in `schema.go`. `jamf_pro_id` recovery from query events requires the provider to surface it in the `list_resource_found` `resource_object` payload — confirm against a live tenant.
 
 ### JSC Pipeline (jsc/pipeline.go → RunPipeline)
 
@@ -126,11 +129,11 @@ jamformer is a CLI tool that converts a Jamf instance into a structured Terrafor
 
 ### Adding a new Jamf Platform resource type
 
-1. Add a `ResourceDef` entry to `platform/resources.go` `Resources` table
-2. Add the resource type to `listableResourceTypes` in `platform/query.go`
-3. Add reference rules to `platform.DefaultRules()` in `platform/resources.go` if the new type is referenced by other resources
+1. Add an entry to `listablePro` (or `singletonPro`, or `nativeResources`) in `platform/resources.go` — `buildResources()` derives the `Resources` table, `TypeToFileMap`, `ValidFilterNames`, `ListableResources()`, and `SingletonResources()` from these. `GenerateQueryFile` (query.go) emits list blocks from `ListableResources()`, so no separate map to update
+2. Add reference rules to `platform.DefaultRules()` if the new type is referenced by other resources — use `AttrPath` for nested object attributes (e.g. `["general"]`, `["scope","targets"]`) and `ElementAttr` for list-of-objects (e.g. `scripts = [ { id } ]`); route computer/mobile group scope to `DeviceGroupComputerType` / `DeviceGroupMobileType` with `TargetAttr: "jamf_pro_id"`
+3. Add an `ExtractSpec` to `platform.ExtractSpecs()` if the type carries a long string (script/payload/app-config) to extract to a support file
 4. If the resource uses a non-`name` attribute for labels, update `nameAttrForType()` in `platform/labels.go`
-5. Add tests in the relevant `_test.go` files
+5. Add tests in the relevant `_test.go` files (update the count expectations in `resources_test.go`)
 6. Update README.md (resource table, output structure, cross-reference table)
 
 ### Adding a new JSC resource type
@@ -166,7 +169,7 @@ jamformer is a CLI tool that converts a Jamf instance into a structured Terrafor
 - Terraform output is suppressed by default; use `-verbose` to show it (stderr is still captured and shown on failure)
 - `tfexec` manages `TF_IN_AUTOMATION` and `TF_INPUT` internally — do not pass these via `SetEnv` or they will be rejected; inherited env vars managed by tfexec are filtered out before calling `SetEnv`
 - When testing against a live instance, always use `-skip-package-downloads` to avoid downloading large files from the Cloud Distribution Point
-- `-provider jamfprotect`, `-provider jamfplatform`, or `-provider jsc` (or `JAMFORMER_PROVIDER` env var) selects the pipeline; default is `jamfpro`
+- `-provider jamfprotect`, `-provider jsc`, or `-provider jamfpro` (or `JAMFORMER_PROVIDER` env var) selects the pipeline; default is `jamfplatform`. The interactive picker lists Platform → Protect → JSC → Pro, with Pro flagged as the Deployment Theory community provider
 - Jamf Protect and Jamf Platform only support OAuth2; JSC only supports basic auth; each rejects the wrong auth mode with a fatal error
 - Protect and Platform use `terraform query` (Terraform 1.14+) instead of API-based discovery — no custom SDK client needed
 - JSC uses `terraform apply` against data sources for discovery (the JSC provider does not implement list resources); credentials are passed through `terraform.tfvars` rather than env vars

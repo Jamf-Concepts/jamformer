@@ -79,10 +79,13 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		platformCreds.ResolvedVersion = terraform.ResolvedProviderVersion(opts.OutputDir, terraform.ProviderSourceJamfPlatform)
 	}
 
-	// 3. Terraform query (list resources)
+	// 3. Terraform query (list resources). Capture the JSON event stream so we
+	// can recover device groups' computed jamf_pro_id (dropped by
+	// -generate-config-out) for classic-API scope bridging.
 	status("discovering")
 	logStep("Discovering and generating configuration...")
 	generatedFile := filepath.Join(opts.OutputDir, "generated.tf")
+	eventsFile := filepath.Join(opts.OutputDir, "query_events.json")
 	platformEnv := map[string]string{
 		"JAMFPLATFORM_BASE_URL":      opts.BaseURL,
 		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
@@ -92,8 +95,32 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.TenantID
 	}
 
-	if err := terraform.Query(opts.OutputDir, generatedFile, platformEnv); err != nil {
+	if err := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, platformEnv); err != nil {
 		return nil, fmt.Errorf("terraform query: %w", err)
+	}
+
+	// 4. Discover singleton settings: write import blocks, then generate their
+	// config via `terraform plan -generate-config-out`, and merge into generated.tf.
+	wroteSingletons, err := WriteSingletonImports(opts.OutputDir, opts.SelectedResources)
+	if err != nil {
+		return nil, fmt.Errorf("writing singleton imports: %w", err)
+	}
+	if wroteSingletons {
+		logStep("Generating singleton settings configuration...")
+		singletonsFile := filepath.Join(opts.OutputDir, "singletons_generated.tf")
+		if err := terraform.GenerateConfig(opts.OutputDir, singletonsFile, platformEnv); err != nil {
+			return nil, fmt.Errorf("terraform plan (singletons): %w", err)
+		}
+		if singletonData, err := os.ReadFile(singletonsFile); err == nil {
+			mainData, err := os.ReadFile(generatedFile)
+			if err != nil {
+				return nil, fmt.Errorf("reading generated config for singleton merge: %w", err)
+			}
+			if err := os.WriteFile(generatedFile, append(mainData, singletonData...), 0644); err != nil {
+				return nil, fmt.Errorf("merging singleton config: %w", err)
+			}
+			_ = os.Remove(singletonsFile)
+		}
 	}
 
 	// Write the user-facing provider.tf (with var.* refs), variables.tf, terraform.tfvars
@@ -101,16 +128,29 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		return nil, fmt.Errorf("finalizing provider config: %w", err)
 	}
 
-	// 4. Rename auto-generated labels (all_0, all_1) to friendly names
+	// 5. Rename auto-generated labels (all_0, all_1) to friendly names, folding
+	// device_type into jamfplatform_device_group labels.
 	if err := RenameLabels(generatedFile); err != nil {
 		return nil, fmt.Errorf("renaming labels: %w", err)
 	}
 
-	// 5. Populate registry from generated config for reference resolution
+	// 6. Populate registry from generated config for reference resolution, then
+	// add the synthetic computer/mobile device-group subtypes keyed by jamf_pro_id.
 	reg := registry.New()
 	if err := PopulateRegistryFromGenerated(generatedFile, reg); err != nil {
 		return nil, fmt.Errorf("populating registry: %w", err)
 	}
+	if dgInfo, err := CollectDeviceGroupInfo(generatedFile); err == nil {
+		if mErr := MergeJamfProIDsFromEvents(dgInfo, eventsFile); mErr != nil && !opts.Quiet {
+			fmt.Printf("  Warning: could not read device-group jamf_pro_id from query events: %v\n", mErr)
+		}
+		if unbridged := PopulateDeviceGroupSubtypes(reg, dgInfo); unbridged > 0 && !opts.Quiet {
+			fmt.Printf("  Warning: %d device group(s) lack a recoverable jamf_pro_id; classic scope references to them stay as raw IDs\n", unbridged)
+		}
+	} else if !opts.Quiet {
+		fmt.Printf("  Warning: could not collect device-group info: %v\n", err)
+	}
+	_ = os.Remove(eventsFile)
 
 	if !opts.Quiet {
 		counts, _ := CountResources(generatedFile)
@@ -119,7 +159,8 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
-	// 6. Post-process: strip nulls, rewrite references, split into per-type files
+	// 7. Post-process: strip nulls, rewrite references (object-attribute aware),
+	// extract scripts/profiles/app-configs to support files, split per-type.
 	status("post-processing")
 	logStep("Post-processing generated configuration...")
 	schemas, err := terraform.ProvidersSchema(opts.OutputDir)
@@ -129,17 +170,19 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	if err := postprocess.Process(opts.OutputDir, generatedFile, reg, &postprocess.ProcessOptions{
 		TypeToFileMap:   TypeToFileMap(),
 		Rules:           DefaultRules(),
+		ExtractSpecs:    ExtractSpecs(),
 		SkipReferences:  opts.SkipReferences,
 		ProviderSchemas: schemas,
 	}); err != nil {
 		return nil, fmt.Errorf("post-processing: %w", err)
 	}
 
-	// 7. Clean up intermediate files
+	// 8. Clean up intermediate files
 	// Must happen before validation so terraform validate doesn't see duplicate
 	// resource definitions in both generated.tf and the per-type split files.
 	_ = os.Remove(generatedFile)
 	_ = os.Remove(filepath.Join(opts.OutputDir, "query.tfquery.hcl"))
+	_ = os.Remove(filepath.Join(opts.OutputDir, "singletons_import.tf"))
 
 	// 8. Validate and auto-fix conditionally invalid attributes
 	var providerSchema *postprocess.ProviderSchema

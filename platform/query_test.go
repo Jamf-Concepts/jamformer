@@ -23,10 +23,15 @@ func TestGenerateQueryFile_AllResources(t *testing.T) {
 
 	body := string(content)
 
-	// All 3 listable resource types should appear
-	for filterKey, resourceType := range listableResourceTypes {
-		if !strings.Contains(body, resourceType) {
-			t.Errorf("query file missing resource type %q (filter key %q)", resourceType, filterKey)
+	// All listable resource types should appear; singletons must not.
+	for _, r := range ListableResources() {
+		if !strings.Contains(body, r.TFType) {
+			t.Errorf("query file missing resource type %q (filter key %q)", r.TFType, r.FilterKey)
+		}
+	}
+	for _, r := range SingletonResources() {
+		if strings.Contains(body, "list \""+r.TFType+"\"") {
+			t.Errorf("query file must not contain a list block for singleton %q", r.TFType)
 		}
 	}
 
