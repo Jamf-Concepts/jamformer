@@ -201,6 +201,19 @@ func SingletonResources() []ResourceDef {
 	return out
 }
 
+// countSelectedListableTypes returns how many listable (non-singleton) resource
+// types will be queried, honouring the selection filter (nil = all). Used as the
+// denominator for the discovery progress fraction.
+func countSelectedListableTypes(selected map[string]bool) int {
+	n := 0
+	for _, r := range ListableResources() {
+		if selected == nil || selected[r.FilterKey] {
+			n++
+		}
+	}
+	return n
+}
+
 // Synthetic registry types used to disambiguate the two flavours of
 // jamfplatform_device_group (one TF type, separate Jamf Pro ID spaces). They are
 // keyed by jamf_pro_id and resolve to a jamfplatform_device_group.<label> address

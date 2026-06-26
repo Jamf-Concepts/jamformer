@@ -136,7 +136,7 @@ jamformer needs **Read** on every object type it is asked to discover. It perfor
 | `-exclude-resources` | `JAMFORMER_EXCLUDE` | Space-separated resource types to exclude | |
 | `-output` | `JAMFORMER_OUTPUT` | Output directory | `generated` |
 | `-terraform-path` | `JAMFORMER_TERRAFORM_PATH` | Path to terraform binary (skip auto-download) | |
-| `-skip-package-downloads` | `JAMFORMER_SKIP_PACKAGE_DOWNLOADS` | Skip downloading packages from the CDP | `false` |
+| `-skip-package-downloads` | `JAMFORMER_SKIP_PACKAGE_DOWNLOADS` | Skip downloading packages (Jamf Pro: CDP; Jamf Platform: JCDS) | `false` |
 | `-skip-references` | `JAMFORMER_SKIP_REFERENCES` | Skip cross-resource reference resolution | `false` |
 | `-skip-import-blocks` | `JAMFORMER_SKIP_IMPORT_BLOCKS` | Remove import blocks after generation | `false` |
 | `-verbose` | `JAMFORMER_VERBOSE` | Show terraform command output | `false` |
@@ -444,7 +444,8 @@ Protect and Platform use `terraform query`, which requires Terraform 1.14 or lat
 - **Not production-ready output** - The generated HCL is a starting point that will likely need review and refinement before managing real infrastructure.
 - **Provider drift** - Some attributes may show as changes on `terraform plan` after import due to provider SDK defaults that don't round-trip. These are provider issues, not jamformer issues.
 - **Icon discovery** - Icons are discovered by scanning policies, profiles, and apps individually (no "list all icons" API). This adds API calls proportional to the number of policies + profiles + apps. Icons are referenced via CDN URL (`icon_file_web_source`) rather than downloaded locally, and include `lifecycle { ignore_changes }` to prevent destroy/create on first apply. Icon resource labels match the referencing resource (e.g. `jamfpro_icon.install_chrome` for `jamfpro_policy.install_chrome`).
-- **Package downloads** - Packages are downloaded from the Cloud Distribution Point by default. Use `-skip-package-downloads` to skip.
+- **Package downloads** - For Jamf Pro, packages are downloaded from the Cloud Distribution Point by default. For Jamf Platform, packages resident in the Jamf Cloud Distribution Service (JCDS) are downloaded by default when `JAMF_TENANT_ID` is set (JCDS is tenant-scoped); catalog packages whose bytes live elsewhere are kept as metadata + server-supplied hashes. Use `-skip-package-downloads` to skip in both cases.
+- **Blueprint drafts (Jamf Platform)** - A blueprint with no device groups is a non-creatable UI draft (`POST /blueprints` rejects an empty scope). jamformer skips these on export with a warning, since they would otherwise fail `terraform validate`.
 - **Terraform 1.14+** - Jamf Protect and Platform require Terraform 1.14+ for `terraform query` support.
 - **OAuth2 short-lived tokens** - API integrations with very short token lifetimes (under 60 seconds) are supported via automatic token lifetime probing. The generated `provider.tf` includes `token_refresh_buffer_period_seconds` when needed. If you change API integrations after generation, you may need to update this value.
 - **JSC auth** - JSC requires a local account or Jamf ID. SSO/SAML authentication is not supported.

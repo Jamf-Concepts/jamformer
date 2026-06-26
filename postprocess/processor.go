@@ -30,6 +30,11 @@ type ProcessOptions struct {
 	PackageFiles map[string]string
 	// PackageInfo maps package_name -> filename from discovery.
 	PackageInfo map[string]string
+	// PlatformPackageFiles maps a jamfplatform_pro_package file_name -> relative
+	// path for files downloaded from JCDS. When a package's file_name is present,
+	// post-processing switches it to upload mode: package_file_source = file(...)
+	// and the conflicting server-supplied hash attributes are removed.
+	PlatformPackageFiles map[string]string
 	// IconURLs maps icon Jamf ID -> CDN URL for icon_file_web_source.
 	IconURLs map[string]string
 	// EnrollmentCustomizationImageFiles maps enrollment customization Jamf ID -> relative path.
@@ -331,6 +336,28 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			continue
 		}
 
+		// Skip non-creatable blueprint drafts: a blueprint with empty/absent
+		// scope.deviceGroups exists as a UI draft but cannot be created via the
+		// API (POST /blueprints rejects an empty device_groups with 400
+		// [NotEmpty]). The provider's SizeAtLeast(1) validator mirrors that, so
+		// such a draft would fail `terraform validate`. Drop it like a
+		// vendor-managed profile.
+		if resourceType == "jamfplatform_blueprints_blueprint" && hasEmptyDeviceGroups(block.Body()) {
+			name := labels[1]
+			if nm := block.Body().GetAttribute("name"); nm != nil {
+				if v := ExtractStringValue(nm); v != "" {
+					name = v
+				}
+			}
+			if !Quiet {
+				fmt.Printf("  Skipping blueprint %q: empty device_groups (non-creatable draft)\n", name)
+			}
+			addr := resourceType + "." + labels[1]
+			_ = terraform.RemoveImportBlock(outputDir, addr)
+			skippedAddrs[addr] = true
+			continue
+		}
+
 		// Wire Required WriteOnly secrets the server never returns to sensitive
 		// variables (and seed their _wo_version companions) so the config validates.
 		if opts.InjectRequiredWriteOnly && schema != nil {
@@ -377,6 +404,27 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 				if !resolved {
 					block.Body().SetAttributeValue("package_file_source", cty.StringVal("# TODO: set package file path"))
+				}
+			}
+		}
+
+		if resourceType == "jamfplatform_pro_package" && len(opts.PlatformPackageFiles) > 0 {
+			// Switch downloaded packages to JCDS upload mode: set package_file_source
+			// to a file() reference and drop the server-supplied hash attributes,
+			// which the provider rejects alongside package_file_source. Packages
+			// without a downloaded file stay as metadata + hashes (applied as-is).
+			if nameAttr := block.Body().GetAttribute("file_name"); nameAttr != nil {
+				fileName := ExtractStringValue(nameAttr)
+				if relPath, ok := opts.PlatformPackageFiles[fileName]; ok {
+					// package_file_source is a path string the provider opens and
+					// uploads — not file() contents (binary packages aren't UTF-8).
+					pathRef := fmt.Sprintf(`"${path.module}/%s"`, filepath.ToSlash(relPath))
+					block.Body().SetAttributeRaw("package_file_source", hclwrite.Tokens{
+						{Type: hclsyntax.TokenIdent, Bytes: []byte(pathRef)},
+					})
+					for _, h := range []string{"sha3_512", "sha256", "md5", "hash_type", "hash_value", "package_file_source_checksum"} {
+						block.Body().RemoveAttribute(h)
+					}
 				}
 			}
 		}
@@ -663,6 +711,20 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	terraform.FormatDir(outputDir)
 
 	return nil
+}
+
+// hasEmptyDeviceGroups reports whether a blueprint's device_groups list is
+// absent or empty. Whitespace is collapsed before comparison so multi-line
+// empty tuples (e.g. "[\n]") are detected. A populated list (raw UUIDs or
+// rewritten references) returns false.
+func hasEmptyDeviceGroups(body *hclwrite.Body) bool {
+	attr := body.GetAttribute("device_groups")
+	if attr == nil {
+		return true
+	}
+	expr := string(attr.Expr().BuildTokens(nil).Bytes())
+	compact := strings.Join(strings.Fields(expr), "")
+	return compact == "" || compact == "[]" || compact == "null"
 }
 
 // appendTokenVars adds token file path variable definitions to variables.tf.

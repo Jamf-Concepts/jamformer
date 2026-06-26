@@ -968,10 +968,19 @@ func main() {
 		}
 	}
 
-	// Prompt to skip package downloads if packages are included (Jamf Pro only)
-	if !isProtect && !isPlatform && !isJSC && interactive && !*skipPackageDownloads && (selectedResources == nil || selectedResources["packages"]) {
+	// Prompt to skip package downloads if packages are included (Jamf Pro and
+	// Jamf Platform). Pro filters on the "packages" key; Platform on "package".
+	pkgFilterKey := "packages"
+	if isPlatform {
+		pkgFilterKey = "package"
+	}
+	if !isProtect && !isJSC && interactive && !*skipPackageDownloads && (selectedResources == nil || selectedResources[pkgFilterKey]) {
 		reader := bufio.NewReader(os.Stdin)
-		answer := promptLine(reader, fmt.Sprintf("Download package files from the Cloud Distribution Point? %s(can be slow/large) [y/N]%s: ", uDim, uReset))
+		prompt := "Download package files from the Cloud Distribution Point?"
+		if isPlatform {
+			prompt = "Download package files from the Jamf Cloud Distribution Service?"
+		}
+		answer := promptLine(reader, fmt.Sprintf("%s %s(can be slow/large) [y/N]%s: ", prompt, uDim, uReset))
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		if answer != "y" && answer != "yes" {
 			*skipPackageDownloads = true
@@ -1039,16 +1048,17 @@ func main() {
 		pipelineErr = multienv.RunPipeline(multienvOpts)
 	} else if isPlatform {
 		platformOpts := &platform.PipelineOptions{
-			OutputDir:         absOutput,
-			BaseURL:           *url,
-			ClientID:          *clientID,
-			ClientSecret:      *clientSecret,
-			TenantID:          *tenantID,
-			SelectedResources: selectedResources,
-			SkipReferences:    *skipReferences,
-			ProviderVersion:   *providerVersionFlag,
-			Quiet:             quiet,
-			Verbose:           *verbose,
+			OutputDir:            absOutput,
+			BaseURL:              *url,
+			ClientID:             *clientID,
+			ClientSecret:         *clientSecret,
+			TenantID:             *tenantID,
+			SelectedResources:    selectedResources,
+			SkipReferences:       *skipReferences,
+			SkipPackageDownloads: *skipPackageDownloads,
+			ProviderVersion:      *providerVersionFlag,
+			Quiet:                quiet,
+			Verbose:              *verbose,
 		}
 		if spin != nil {
 			platformOpts.StatusFunc = spin.Update

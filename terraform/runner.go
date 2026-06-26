@@ -48,11 +48,18 @@ var Parallelism = 1
 // interactive mode when a spinner is active.
 var ProgressFunc func(current, total int)
 
-// progressWriter counts "Read complete" occurrences in terraform stderr output
-// and calls callback(current, total) on each hit. It optionally forwards all
-// bytes to sink (used when Verbose = true to preserve terminal output).
+// QueryProgressFunc is called during QueryWithEvents with the running count of
+// list resources that have finished (one per "list_complete" event in the
+// -json stream). The caller maps this to its known total (number of list
+// types). Set to nil to disable; only meaningful for -json queries.
+var QueryProgressFunc func(completed int)
+
+// progressWriter counts occurrences of marker in a terraform output stream and
+// calls callback(current, total) on each hit. It optionally forwards all bytes
+// to sink (used when Verbose = true, or to tee a captured events file).
 type progressWriter struct {
 	sink     io.Writer
+	marker   []byte
 	buf      []byte
 	current  int
 	total    int
@@ -64,10 +71,18 @@ type progressWriter struct {
 // one "Refreshing state..." line as it is read from the provider.
 var refreshMarker = []byte("Refreshing state...")
 
+// listCompleteMarker matches one terraform query -json "list_complete" event,
+// emitted once per list block (resource type) as its query finishes.
+var listCompleteMarker = []byte(`"type":"list_complete"`)
+
 func (pw *progressWriter) Write(p []byte) (n int, err error) {
+	marker := pw.marker
+	if marker == nil {
+		marker = refreshMarker
+	}
 	data := append(pw.buf, p...)
 	for {
-		idx := bytes.Index(data, refreshMarker)
+		idx := bytes.Index(data, marker)
 		if idx < 0 {
 			break
 		}
@@ -75,10 +90,10 @@ func (pw *progressWriter) Write(p []byte) (n int, err error) {
 		if pw.callback != nil {
 			pw.callback(pw.current, pw.total)
 		}
-		data = data[idx+len(refreshMarker):]
+		data = data[idx+len(marker):]
 	}
 	// Retain tail bytes to handle markers split across Write calls
-	tail := len(refreshMarker) - 1
+	tail := len(marker) - 1
 	if len(data) > tail {
 		pw.buf = append(pw.buf[:0], data[len(data)-tail:]...)
 	} else {
@@ -275,6 +290,7 @@ func GenerateConfig(workDir, outputFile string, providerEnv map[string]string) e
 		if ProgressFunc != nil {
 			currentTotal, _ := countImportBlocks(workDir)
 			pw := &progressWriter{
+				marker:   refreshMarker,
 				total:    currentTotal,
 				callback: ProgressFunc,
 			}
@@ -383,18 +399,33 @@ func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[strin
 		eventsOut = f
 	}
 
+	var stdoutDest io.Writer
 	if Verbose {
 		if eventsOut != nil {
-			cmd.Stdout = io.MultiWriter(eventsOut, os.Stdout)
+			stdoutDest = io.MultiWriter(eventsOut, os.Stdout)
 		} else {
-			cmd.Stdout = os.Stdout
+			stdoutDest = os.Stdout
 		}
 		cmd.Stderr = os.Stderr
 	} else {
 		if eventsOut != nil {
-			cmd.Stdout = eventsOut
+			stdoutDest = eventsOut
 		}
 		cmd.Stderr = &stderr
+	}
+
+	// Tee the -json event stream through a counting writer so the spinner can
+	// show a per-list-type discovery fraction. Only the -json path emits
+	// "list_complete" events, so this is a no-op for the human-readable path.
+	if eventsOut != nil && QueryProgressFunc != nil {
+		stdoutDest = &progressWriter{
+			sink:     stdoutDest,
+			marker:   listCompleteMarker,
+			callback: func(current, _ int) { QueryProgressFunc(current) },
+		}
+	}
+	if stdoutDest != nil {
+		cmd.Stdout = stdoutDest
 	}
 
 	if err := cmd.Run(); err != nil {

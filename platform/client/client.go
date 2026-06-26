@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
+	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
 )
 
 // VerifyAuth creates a Jamf Platform SDK client and validates the credentials
@@ -23,4 +24,17 @@ func VerifyAuth(baseURL, clientID, clientSecret, tenantID string) error {
 	}
 
 	return nil
+}
+
+// NewProClient builds a Jamf Platform "pro" SDK client for the federated Jamf
+// Pro surface (e.g. package downloads via the Jamf Cloud Distribution Service).
+// A tenant ID is required: pro endpoints are tenant-scoped, so without it the
+// SDK builds malformed URLs.
+func NewProClient(baseURL, clientID, clientSecret, tenantID string) *sdkpro.Client {
+	var opts []jamfplatform.Option
+	if tenantID != "" {
+		opts = append(opts, jamfplatform.WithTenantID(tenantID))
+	}
+	root := jamfplatform.NewClient(baseURL, clientID, clientSecret, opts...)
+	return sdkpro.New(root)
 }

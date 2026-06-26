@@ -42,6 +42,27 @@ func TestPlatformResourceCounts(t *testing.T) {
 	}
 }
 
+func TestCountSelectedListableTypes(t *testing.T) {
+	// nil selection means all listable types (the discovery progress denominator).
+	if got, want := countSelectedListableTypes(nil), len(ListableResources()); got != want {
+		t.Errorf("nil selection: got %d, want %d", got, want)
+	}
+	// A selection counts only listable matches, ignoring singletons and unknowns.
+	sel := map[string]bool{
+		"policy":      true, // listable
+		"package":     true, // listable
+		"smtp_server": true, // singleton — must not count
+		"nonexistent": true, // unknown — must not count
+	}
+	if got := countSelectedListableTypes(sel); got != 2 {
+		t.Errorf("selection: got %d, want 2", got)
+	}
+	// Empty (non-nil) selection counts nothing.
+	if got := countSelectedListableTypes(map[string]bool{}); got != 0 {
+		t.Errorf("empty selection: got %d, want 0", got)
+	}
+}
+
 func TestPlatformResourceUniqueness(t *testing.T) {
 	seenType := map[string]bool{}
 	seenFile := map[string]bool{}

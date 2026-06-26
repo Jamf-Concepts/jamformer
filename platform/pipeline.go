@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/Jamf-Concepts/jamformer/importgen"
+	"github.com/Jamf-Concepts/jamformer/platform/client"
+	"github.com/Jamf-Concepts/jamformer/platform/download"
 	"github.com/Jamf-Concepts/jamformer/postprocess"
 	"github.com/Jamf-Concepts/jamformer/registry"
 	"github.com/Jamf-Concepts/jamformer/terraform"
@@ -19,13 +21,14 @@ type PipelineOptions struct {
 	BaseURL           string
 	ClientID          string
 	ClientSecret      string
-	TenantID          string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
-	SelectedResources map[string]bool
-	SkipReferences    bool
-	ProviderVersion   string
-	Quiet             bool
-	Verbose           bool
-	StatusFunc        func(string, int, int) // optional callback: (message, current, total)
+	TenantID             string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
+	SelectedResources    map[string]bool
+	SkipReferences       bool
+	SkipPackageDownloads bool
+	ProviderVersion      string
+	Quiet                bool
+	Verbose              bool
+	StatusFunc           func(string, int, int) // optional callback: (message, current, total)
 }
 
 // RunPipeline executes the full Jamf Platform export pipeline:
@@ -44,14 +47,14 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 			fmt.Printf(format+"\n", args...)
 		}
 	}
-	status := func(msg string) {
+	status := func(msg string, current, total int) {
 		if opts.StatusFunc != nil {
-			opts.StatusFunc(msg, 0, 0)
+			opts.StatusFunc(msg, current, total)
 		}
 	}
 
 	// 1. Generate provider config + query file
-	status("generating config")
+	status("generating config", 0, 0)
 	logStep("Generating Terraform configuration for Jamf Platform...")
 	platformCreds := &importgen.PlatformCredentials{
 		BaseURL:         opts.BaseURL,
@@ -68,7 +71,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	}
 
 	// 2. Terraform init
-	status("initialising terraform")
+	status("initialising terraform", 0, 0)
 	logStep("Initialising Terraform provider...")
 	if err := terraform.Init(opts.OutputDir); err != nil {
 		return nil, fmt.Errorf("terraform init: %w", err)
@@ -82,7 +85,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	// 3. Terraform query (list resources). Capture the JSON event stream so we
 	// can recover device groups' computed jamf_pro_id (dropped by
 	// -generate-config-out) for classic-API scope bridging.
-	status("discovering")
+	status("discovering", 0, 0)
 	logStep("Discovering and generating configuration...")
 	generatedFile := filepath.Join(opts.OutputDir, "generated.tf")
 	eventsFile := filepath.Join(opts.OutputDir, "query_events.json")
@@ -95,8 +98,17 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.TenantID
 	}
 
-	if err := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, platformEnv); err != nil {
-		return nil, fmt.Errorf("terraform query: %w", err)
+	// Drive a per-list-type discovery fraction: terraform query emits one
+	// "list_complete" event per list block, counted against the number of
+	// selected list types.
+	listTypeTotal := countSelectedListableTypes(opts.SelectedResources)
+	terraform.QueryProgressFunc = func(done int) {
+		status("discovering", done, listTypeTotal)
+	}
+	queryErr := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, platformEnv)
+	terraform.QueryProgressFunc = nil
+	if queryErr != nil {
+		return nil, fmt.Errorf("terraform query: %w", queryErr)
 	}
 
 	// 4. Discover singleton settings: write import blocks, then generate their
@@ -107,6 +119,14 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	}
 	if wroteSingletons {
 		logStep("Generating singleton settings configuration...")
+		// Each singleton is read by `terraform plan -generate-config-out`, which
+		// emits one "Refreshing state..." line per import block — reuse the plan
+		// progress hook to show a per-singleton fraction.
+		status("importing settings", 0, 0)
+		terraform.ProgressFunc = func(current, total int) {
+			status("importing settings", current, total)
+		}
+		defer func() { terraform.ProgressFunc = nil }()
 		singletonsFile := filepath.Join(opts.OutputDir, "singletons_generated.tf")
 		// The singleton plan only generates config for the singleton import
 		// blocks; it does not reference the main resources. Stage the (potentially
@@ -175,9 +195,40 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
+	// 6b. Download package files resident in the Jamf Cloud Distribution Service.
+	// Only JCDS-resident files are fetchable (and only when a tenant ID is set —
+	// the pro endpoints are tenant-scoped); the rest stay as metadata + server
+	// hashes, which the provider applies without a file. Skipped entirely with
+	// -skip-package-downloads.
+	packageFiles := make(map[string]string) // fileName → relative path
+	pkgSelected := opts.SelectedResources == nil || opts.SelectedResources["package"]
+	if !opts.SkipPackageDownloads && pkgSelected {
+		if opts.TenantID == "" {
+			logStep("Skipping package downloads (set JAMF_TENANT_ID to enable — JCDS is tenant-scoped)")
+		} else {
+			status("downloading packages", 0, 0)
+			logStep("Downloading package files...")
+			download.Quiet = opts.Quiet
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			files, dlErr := download.Packages(terraform.Ctx, pc, opts.OutputDir, func(current, total int) {
+				status("downloading packages", current, total)
+			})
+			if dlErr != nil {
+				if !opts.Quiet {
+					fmt.Printf("  Warning: package download failed: %v\n", dlErr)
+				}
+			} else {
+				packageFiles = files
+				logStep("  Downloaded %d package file(s)", len(files))
+			}
+		}
+	} else if opts.SkipPackageDownloads && pkgSelected {
+		logStep("Skipping package downloads (use without -skip-package-downloads to download)")
+	}
+
 	// 7. Post-process: strip nulls, rewrite references (object-attribute aware),
 	// extract scripts/profiles/app-configs to support files, split per-type.
-	status("post-processing")
+	status("post-processing", 0, 0)
 	logStep("Post-processing generated configuration...")
 	schemas, err := terraform.ProvidersSchema(opts.OutputDir)
 	if err != nil && !postprocess.Quiet {
@@ -190,6 +241,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		SkipReferences:          opts.SkipReferences,
 		ProviderSchemas:         schemas,
 		InjectRequiredWriteOnly: true,
+		PlatformPackageFiles:    packageFiles,
 	}); err != nil {
 		return nil, fmt.Errorf("post-processing: %w", err)
 	}
