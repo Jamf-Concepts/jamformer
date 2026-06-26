@@ -134,6 +134,7 @@ func TestPlatformDefaultRulesCount(t *testing.T) {
 
 func TestPlatformDefaultRulesValid(t *testing.T) {
 	// Every rule must name a resource type, an attribute, and a resolvable target.
+	// Polymorphic rules carry their targets in DiscriminatorMap instead of TargetTypes.
 	for i, r := range DefaultRules() {
 		if r.ResourceType == "" {
 			t.Errorf("rule %d has empty ResourceType", i)
@@ -141,7 +142,16 @@ func TestPlatformDefaultRulesValid(t *testing.T) {
 		if r.AttrName == "" {
 			t.Errorf("rule %d (%s) has empty AttrName", i, r.ResourceType)
 		}
-		if len(r.TargetTypes) == 0 || r.TargetAttr == "" {
+		if r.TargetAttr == "" {
+			t.Errorf("rule %d (%s.%s) has no TargetAttr", i, r.ResourceType, r.AttrName)
+		}
+		if len(r.DiscriminatorMap) > 0 {
+			if r.DiscriminatorAttr == "" || r.ElementAttr == "" {
+				t.Errorf("rule %d (%s.%s) has DiscriminatorMap but missing DiscriminatorAttr/ElementAttr", i, r.ResourceType, r.AttrName)
+			}
+			continue
+		}
+		if len(r.TargetTypes) == 0 {
 			t.Errorf("rule %d (%s.%s) has no target", i, r.ResourceType, r.AttrName)
 		}
 	}

@@ -51,6 +51,60 @@ resource "jamfplatform_pro_script" "test" {
 	}
 }
 
+// TestObjAttrPolymorphicElement rewrites a list-of-objects element ID whose
+// target type is chosen per-element by a sibling discriminator field, mirroring
+// macOS onboarding's onboarding_items[].entity_id keyed on self_service_entity_type.
+func TestObjAttrPolymorphicElement(t *testing.T) {
+	reg := registry.New()
+	reg.Register("jamfplatform_pro_policy", "4", "jamfplatform_pro_policy.install_chrome")
+	reg.Register("jamfplatform_pro_macos_configuration_profile", "11", "jamfplatform_pro_macos_configuration_profile.filevault")
+	reg.Register("jamfplatform_pro_mac_app_store_app", "87", "jamfplatform_pro_mac_app_store_app.slack")
+
+	f := parseHCLRef(t, `
+resource "jamfplatform_pro_macos_onboarding" "singleton" {
+  onboarding_items = [
+    {
+      entity_id                = "4"
+      self_service_entity_type = "OS_X_POLICY"
+    },
+    {
+      entity_id                = "11"
+      self_service_entity_type = "OS_X_CONFIG_PROFILE"
+    },
+    {
+      entity_id                = "87"
+      self_service_entity_type = "OS_X_MAC_APP"
+    },
+  ]
+}
+`)
+	body := refBlockBody(t, f)
+	rule := postprocess.ReferenceRule{
+		ResourceType:      "jamfplatform_pro_macos_onboarding",
+		AttrName:          "onboarding_items",
+		ElementAttr:       "entity_id",
+		DiscriminatorAttr: "self_service_entity_type",
+		DiscriminatorMap: map[string]string{
+			"OS_X_POLICY":         "jamfplatform_pro_policy",
+			"OS_X_CONFIG_PROFILE": "jamfplatform_pro_macos_configuration_profile",
+			"OS_X_MAC_APP":        "jamfplatform_pro_mac_app_store_app",
+		},
+		TargetAttr: "id",
+	}
+	postprocess.RewriteBlockForTest(body, rule.BlockPath, rule, reg)
+
+	result := string(f.Bytes())
+	for _, want := range []string{
+		"jamfplatform_pro_policy.install_chrome.id",
+		"jamfplatform_pro_macos_configuration_profile.filevault.id",
+		"jamfplatform_pro_mac_app_store_app.slack.id",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("expected %q in rewritten output, got:\n%s", want, result)
+		}
+	}
+}
+
 // TestObjAttrNestedScopeList rewrites a list of IDs two levels deep in object
 // attributes, resolving to the computer device-group subtype:
 // scope = { targets = { computer_group_ids = ["12"] } }.

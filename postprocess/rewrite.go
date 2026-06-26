@@ -261,7 +261,15 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 			}
 			objBytes := exprBytes[i : objClose+1]
 			if processed, ok := descendObjectExpr(objBytes, nil, func(leaf *hclwrite.Body) bool {
-				return rewriteSingleAttribute(leaf, elemRule, reg)
+				er := elemRule
+				if rule.DiscriminatorAttr != "" {
+					target, ok := discriminatorTarget(leaf, rule)
+					if !ok {
+						return false
+					}
+					er.TargetTypes = []string{target}
+				}
+				return rewriteSingleAttribute(leaf, er, reg)
 			}); ok {
 				buf.Write(processed)
 				modified = true
@@ -280,4 +288,16 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 		return nil, false
 	}
 	return buf.Bytes(), true
+}
+
+// discriminatorTarget reads the rule's DiscriminatorAttr from a list element and
+// maps its value to a target resource type via DiscriminatorMap. Returns false
+// when the discriminator is absent or its value is unmapped.
+func discriminatorTarget(leaf *hclwrite.Body, rule ReferenceRule) (string, bool) {
+	attr := leaf.GetAttribute(rule.DiscriminatorAttr)
+	if attr == nil {
+		return "", false
+	}
+	target, ok := rule.DiscriminatorMap[ExtractStringValue(attr)]
+	return target, ok
 }

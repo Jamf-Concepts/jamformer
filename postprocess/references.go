@@ -44,4 +44,15 @@ type ReferenceRule struct {
 	// (e.g. scripts = [ { id = "44" }, ... ]) and ElementAttr (e.g. "id") is the
 	// field rewritten on each element.
 	ElementAttr string
+
+	// DiscriminatorAttr, when set (with ElementAttr), names a sibling field on
+	// each list element whose value selects the target type via DiscriminatorMap.
+	// Used for polymorphic references where one ID field points at different
+	// resource types depending on a type tag (e.g. macOS onboarding items whose
+	// entity_id targets a policy, profile, or app per self_service_entity_type).
+	DiscriminatorAttr string
+
+	// DiscriminatorMap maps a DiscriminatorAttr value to the TF resource type to
+	// resolve the element's ID against. An unmapped value leaves the ID untouched.
+	DiscriminatorMap map[string]string
 }

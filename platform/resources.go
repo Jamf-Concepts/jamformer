@@ -249,6 +249,9 @@ const (
 	tSupervision = "jamfplatform_pro_supervision_identity"
 	tPatchTitle  = "jamfplatform_pro_patch_software_title"
 	tIcon        = "jamfplatform_pro_icon"
+	tLDAP        = "jamfplatform_pro_ldap_server"
+	tReturnToSvc = "jamfplatform_pro_return_to_service"
+	tFileShareDP = "jamfplatform_pro_file_share_distribution_point"
 )
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
@@ -365,6 +368,7 @@ func DefaultRules() []postprocess.ReferenceRule {
 		mobProfile = "jamfplatform_pro_mobile_device_configuration_profile"
 		mobApp     = "jamfplatform_pro_mobile_device_app"
 		macApp     = "jamfplatform_pro_mac_app_store_app"
+		ebook      = "jamfplatform_pro_ebook"
 		restricted = "jamfplatform_pro_restricted_software"
 		compPre    = "jamfplatform_pro_computer_prestage_enrollment"
 		mobPre     = "jamfplatform_pro_mobile_device_prestage_enrollment"
@@ -372,6 +376,13 @@ func DefaultRules() []postprocess.ReferenceRule {
 		patchTitle = tPatchTitle
 		ade        = tADE
 		vppLoc     = tVPPLocation
+		compInvite = "jamfplatform_pro_computer_invitation"
+		mobInvite  = "jamfplatform_pro_mobile_device_invitation"
+		vppAssign  = "jamfplatform_pro_vpp_assignment"
+		vppNotif   = "jamfplatform_pro_volume_purchasing_notification"
+		uiEnroll   = "jamfplatform_pro_user_initiated_enrollment_settings"
+		macOnboard = "jamfplatform_pro_macos_onboarding"
+		advVPPSrch = "jamfplatform_pro_advanced_volume_purchasing_content_search"
 	)
 
 	rules := []postprocess.ReferenceRule{
@@ -494,11 +505,53 @@ func DefaultRules() []postprocess.ReferenceRule {
 		single(mobPre, "device_enrollment_program_instance_id", ade),
 		single(mobPre, "building_id", tBuilding, "location_information"),
 		single(mobPre, "department_id", tDepartment, "location_information"),
+		single(mobPre, "rts_config_profile_id", tReturnToSvc),
 
 		// --- Automated Device Enrollment / VPP location ---
 		site(ade, "site_id"),
 		single(ade, "supervision_identity_id", tSupervision),
 		site(vppLoc, "site_id"),
+
+		// --- eBook (computer + mobile scope) ---
+		cat(ebook, "general"),
+		site(ebook, "site_id", "general"),
+		dg(ebook, "computer_group_ids", DeviceGroupComputerType, "scope", "targets"),
+		dg(ebook, "mobile_device_group_ids", DeviceGroupMobileType, "scope", "targets"),
+		list(ebook, "building_ids", tBuilding, "scope", "targets"),
+		list(ebook, "department_ids", tDepartment, "scope", "targets"),
+		list(ebook, "user_group_ids", tUserGroup, "scope", "targets"),
+		dg(ebook, "computer_group_ids", DeviceGroupComputerType, "scope", "exclusions"),
+		dg(ebook, "mobile_device_group_ids", DeviceGroupMobileType, "scope", "exclusions"),
+		list(ebook, "building_ids", tBuilding, "scope", "exclusions"),
+		list(ebook, "department_ids", tDepartment, "scope", "exclusions"),
+		list(ebook, "user_group_ids", tUserGroup, "scope", "exclusions"),
+
+		// --- Invitations (enrollment site) ---
+		site(compInvite, "enroll_into_site_id"),
+		site(mobInvite, "enroll_into_site_id"),
+
+		// --- VPP assignment / notification ---
+		single(vppAssign, "vpp_admin_account_id", vppLoc),
+		list(vppNotif, "location_ids", vppLoc),
+		site(advVPPSrch, "site_id"),
+
+		// --- User-initiated enrollment settings (per access-group LDAP server) ---
+		elem(uiEnroll, "access_group", "ldap_server_id", tLDAP),
+
+		// --- macOS Onboarding (polymorphic self-service entity references) ---
+		{
+			ResourceType:      macOnboard,
+			AttrName:          "onboarding_items",
+			ElementAttr:       "entity_id",
+			DiscriminatorAttr: "self_service_entity_type",
+			DiscriminatorMap: map[string]string{
+				"OS_X_POLICY":         policy,
+				"OS_X_CONFIG_PROFILE": macProfile,
+				"OS_X_MAC_APP":        macApp,
+				"OS_X_EBOOK":          ebook,
+			},
+			TargetAttr: "id",
+		},
 	}
 
 	return rules
