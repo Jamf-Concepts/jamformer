@@ -266,6 +266,85 @@ func TestRenameLabels_NoRenamesNeeded(t *testing.T) {
 	}
 }
 
+func TestRenameLabels_ProTypeUsesGeneralName(t *testing.T) {
+	dir := t.TempDir()
+	generatedFile := filepath.Join(dir, "generated.tf")
+
+	// Federated pro_* objecty types carry their display name at nested
+	// general.name, not a top-level name attribute.
+	src := `import {
+  identity = {
+    id = "10"
+  }
+  to = jamfplatform_pro_policy.all_0
+}
+
+resource "jamfplatform_pro_policy" "all_0" {
+  general = {
+    name    = "Install Chrome"
+    enabled = true
+  }
+}
+
+resource "jamfplatform_pro_macos_configuration_profile" "all_1" {
+  general = {
+    name = "FileVault Settings"
+  }
+}
+`
+	if err := os.WriteFile(generatedFile, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RenameLabels(generatedFile); err != nil {
+		t.Fatalf("RenameLabels: %v", err)
+	}
+
+	result, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := string(result)
+	if !strings.Contains(body, `"jamfplatform_pro_policy" "install_chrome"`) {
+		t.Errorf("expected policy renamed from general.name to install_chrome, got:\n%s", body)
+	}
+	if !strings.Contains(body, "jamfplatform_pro_policy.install_chrome") {
+		t.Errorf("expected import block updated to install_chrome, got:\n%s", body)
+	}
+	if !strings.Contains(body, `"jamfplatform_pro_macos_configuration_profile" "filevault_settings"`) {
+		t.Errorf("expected profile renamed from general.name to filevault_settings, got:\n%s", body)
+	}
+}
+
+// TestRenameLabels_TopLevelNameStillWins covers flat pro_* types (category,
+// account, building, …) whose name remains a top-level attribute.
+func TestRenameLabels_TopLevelNameStillWins(t *testing.T) {
+	dir := t.TempDir()
+	generatedFile := filepath.Join(dir, "generated.tf")
+
+	src := `resource "jamfplatform_pro_category" "all_0" {
+  name = "Productivity Apps"
+}
+`
+	if err := os.WriteFile(generatedFile, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RenameLabels(generatedFile); err != nil {
+		t.Fatalf("RenameLabels: %v", err)
+	}
+
+	result, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if body := string(result); !strings.Contains(body, `"jamfplatform_pro_category" "productivity_apps"`) {
+		t.Errorf("expected category renamed from top-level name, got:\n%s", body)
+	}
+}
+
 func TestNameAttrForType(t *testing.T) {
 	tests := []struct {
 		resourceType string

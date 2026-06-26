@@ -53,6 +53,14 @@ type ExtractSpec struct {
 	SkipFn func(content string) (bool, string)
 }
 
+// ReadObjectAttrString reads attrName from the nested object-expression
+// attribute path attrPath within body, returning "" if absent. Exported for
+// provider label composers that derive names from a nested attribute (e.g. the
+// federated jamfplatform_pro_* types whose display name lives at general.name).
+func ReadObjectAttrString(body *hclwrite.Body, attrPath []string, attrName string) string {
+	return readLeafString(body, nil, attrPath, attrName)
+}
+
 // readLeafString navigates blockPath then attrPath from body and returns the
 // string value of attrName at the leaf container, or "" if absent. Read-only.
 func readLeafString(body *hclwrite.Body, blockPath, attrPath []string, attrName string) string {

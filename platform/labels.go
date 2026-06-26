@@ -19,13 +19,23 @@ func nameAttrForType(resourceType string) string {
 }
 
 // platformLabelName composes the pre-sanitization friendly name for a resource
-// block. For jamfplatform_device_group it folds the device_type into the name so
-// a computer group and a mobile group that share a name produce distinct labels
+// block. The federated jamfplatform_pro_* "objecty" types (policy, profiles,
+// apps, ebooks, …) carry their display name at nested general.name rather than a
+// top-level attribute, so general.name is consulted first and the top-level
+// attribute is the fallback for flat types (account, category, building, …).
+// For jamfplatform_device_group it folds the device_type into the name so a
+// computer group and a mobile group that share a name produce distinct labels
 // (e.g. "All Staff" -> all_staff_computer / all_staff_mobile).
 func platformLabelName(resourceType string, body *hclwrite.Body, _ func() string) string {
+	attrName := nameAttrForType(resourceType)
 	var name string
-	if attr := body.GetAttribute(nameAttrForType(resourceType)); attr != nil {
-		name = postprocess.ExtractStringValue(attr)
+	if attrName == "name" {
+		name = postprocess.ReadObjectAttrString(body, []string{"general"}, "name")
+	}
+	if name == "" {
+		if attr := body.GetAttribute(attrName); attr != nil {
+			name = postprocess.ExtractStringValue(attr)
+		}
 	}
 	if name == "" {
 		return ""
