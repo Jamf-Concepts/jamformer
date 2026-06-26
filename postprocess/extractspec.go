@@ -92,16 +92,13 @@ func fileExtFor(kind FileKind, content string) string {
 }
 
 // buildExtractFileName derives a collision-safe filename from a resource name.
-// Scripts only append the guessed extension when not already present (matching
-// historical behaviour); mobileconfig/xml always append.
+// The guessed/known extension is appended only when the sanitized name does not
+// already end in it (case-insensitively), so a profile named
+// "Foo.mobileconfig" yields "Foo.mobileconfig", not "Foo.mobileconfig.mobileconfig".
 func buildExtractFileName(name string, kind FileKind, content string, fileNames map[string]int) string {
 	base := sanitizeFilename(name)
 	ext := fileExtFor(kind, content)
-	if kind == FileKindScript {
-		if !strings.HasSuffix(strings.ToLower(base), ext) {
-			base += ext
-		}
-	} else {
+	if !strings.HasSuffix(strings.ToLower(base), ext) {
 		base += ext
 	}
 
