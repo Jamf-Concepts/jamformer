@@ -52,6 +52,10 @@ type ProcessOptions struct {
 	// support_files/<prefix>/scripts/ instead of support_files/scripts/.
 	// Used by multi-env mode to separate files per environment.
 	SupportFilesPrefix string
+	// InjectRequiredWriteOnly wires Required WriteOnly attributes the server never
+	// returns to sensitive Terraform variables (and seeds their _wo_version
+	// companions with 1) so a generated config validates. Used by jamfplatform.
+	InjectRequiredWriteOnly bool
 }
 
 // Process reads the generated HCL file, rewrites ID references, extracts
@@ -194,6 +198,11 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 	}
 
+	// Sensitive variables synthesised for Required WriteOnly attributes the server
+	// never returns; appended to variables.tf/terraform.tfvars after the block pass.
+	var requiredVars []requiredVar
+	requiredVarNames := make(map[string]bool)
+
 	processedTypes := make(map[string]bool)
 	for _, block := range f.Body().Blocks() {
 		// Collect import blocks; they are written after the resource pass so
@@ -320,6 +329,12 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 		if skipResource {
 			continue
+		}
+
+		// Wire Required WriteOnly secrets the server never returns to sensitive
+		// variables (and seed their _wo_version companions) so the config validates.
+		if opts.InjectRequiredWriteOnly && schema != nil {
+			requiredVars = append(requiredVars, injectRequiredWriteOnly(block.Body(), resourceType, labels[1], schema, requiredVarNames)...)
 		}
 
 		// Jamf Pro-specific resource processing (script/profile/package extraction)
@@ -542,6 +557,12 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			outFile.Body().AppendNewline()
 			appendBlock(outFile.Body(), block)
 		}
+	}
+
+	// Append sensitive variable declarations for any Required WriteOnly attributes
+	// that were wired to var.<name> above.
+	if err := appendRequiredVars(outputDir, requiredVars); err != nil {
+		return err
 	}
 
 	// Write per-type files

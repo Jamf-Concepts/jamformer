@@ -24,6 +24,7 @@ type attrInfo struct {
 	Optional    bool
 	Computed    bool
 	Sensitive   bool
+	WriteOnly   bool
 	Type        cty.Type // attribute type (cty.String, cty.Bool, cty.Number, etc.)
 	NestingMode string   // "single", "list", "set" for nested_type attributes; empty for plain
 }
@@ -58,6 +59,7 @@ func collectAttrs(out map[string]map[string]attrInfo, path string, block *tfjson
 			Optional:  attr.Optional,
 			Computed:  attr.Computed,
 			Sensitive: attr.Sensitive,
+			WriteOnly: attr.WriteOnly,
 			Type:      attr.AttributeType,
 		}
 		if attr.AttributeNestedType != nil {
@@ -92,6 +94,7 @@ func collectNestedType(out map[string]map[string]attrInfo, path string, nt *tfjs
 			Optional:  attr.Optional,
 			Computed:  attr.Computed,
 			Sensitive: attr.Sensitive,
+			WriteOnly: attr.WriteOnly,
 			Type:      attr.AttributeType,
 		}
 		if attr.AttributeNestedType != nil {
@@ -146,6 +149,20 @@ func (ps *ProviderSchema) isSensitive(resourceType, blockPath, attrName string) 
 		return false
 	}
 	return info.Sensitive
+}
+
+// requiredTopLevelAttrs returns the top-level (blockPath "") attribute info for a
+// resource type, keyed by attribute name. Used to inject placeholders for
+// Required attributes the server never returns on read.
+func (ps *ProviderSchema) requiredTopLevelAttrs(resourceType string) map[string]attrInfo {
+	if ps == nil {
+		return nil
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return nil
+	}
+	return paths[""]
 }
 
 // zeroValue returns the cty zero value for the attribute's type.

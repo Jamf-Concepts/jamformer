@@ -184,11 +184,12 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		fmt.Printf("  Warning: could not load provider schema, skipping null attribute removal: %v\n", err)
 	}
 	if err := postprocess.Process(opts.OutputDir, generatedFile, reg, &postprocess.ProcessOptions{
-		TypeToFileMap:   TypeToFileMap(),
-		Rules:           DefaultRules(),
-		ExtractSpecs:    ExtractSpecs(),
-		SkipReferences:  opts.SkipReferences,
-		ProviderSchemas: schemas,
+		TypeToFileMap:           TypeToFileMap(),
+		Rules:                   DefaultRules(),
+		ExtractSpecs:            ExtractSpecs(),
+		SkipReferences:          opts.SkipReferences,
+		ProviderSchemas:         schemas,
+		InjectRequiredWriteOnly: true,
 	}); err != nil {
 		return nil, fmt.Errorf("post-processing: %w", err)
 	}
