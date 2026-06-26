@@ -313,12 +313,27 @@ func processObjectExpr(exprBytes []byte, resourceType, schemaPath string, schema
 		return nil, false
 	}
 
+	return wrapObjectInner(newBytes), true
+}
+
+// wrapObjectInner re-wraps a serialized object-expression body in braces without
+// the leading/trailing blank lines that the strip/rewrite round-trip otherwise
+// leaves (terraform fmt does not collapse blank lines inside object-expression
+// literals). Trimming only the outer whitespace is safe: the body's edges are
+// always structural, never the interior of a multiline string value. An emptied
+// object collapses to "{}".
+func wrapObjectInner(innerBytes []byte) []byte {
+	inner := bytes.TrimSpace(innerBytes)
+	if len(inner) == 0 {
+		return []byte("{}")
+	}
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	buf.WriteByte('\n')
-	buf.Write(newBytes)
+	buf.Write(inner)
+	buf.WriteByte('\n')
 	buf.WriteByte('}')
-	return buf.Bytes(), true
+	return buf.Bytes()
 }
 
 // processListOfObjects processes a list of object expressions [{ ... }, { ... }],

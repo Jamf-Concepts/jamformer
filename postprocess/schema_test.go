@@ -3,6 +3,7 @@
 package postprocess
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -202,6 +203,84 @@ resource "jamfpro_policy" "test" {
 	}
 	if scopeBody.GetAttribute("department_ids") != nil {
 		t.Errorf("expected optional null 'department_ids' to be removed from scope, got:\n%s", result)
+	}
+}
+
+func TestStripNullsInObjectAttr_NoBlankLines(t *testing.T) {
+	src := `
+resource "jamfplatform_pro_policy" "test" {
+  general = {
+    name        = "AD Test"
+    category_id = null
+    date_time_limitations = {
+      activation_date = null
+      no_execute_end  = "2030"
+    }
+  }
+  dock_items = {
+    leave_existing_default = null
+  }
+}
+`
+	f, diags := hclwrite.ParseConfig([]byte(src), "test.tf", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatal(diags.Error())
+	}
+	var body *hclwrite.Body
+	for _, block := range f.Body().Blocks() {
+		if block.Type() == "resource" {
+			body = block.Body()
+			break
+		}
+	}
+
+	schema := &ProviderSchema{
+		attrs: map[string]map[string]map[string]attrInfo{
+			"jamfplatform_pro_policy": {
+				"": {
+					"general":    {Optional: true, NestingMode: "single"},
+					"dock_items": {Optional: true, NestingMode: "single"},
+				},
+				"general": {
+					"name":                  {Required: true},
+					"category_id":           {Optional: true},
+					"date_time_limitations": {Optional: true, NestingMode: "single"},
+				},
+				"general.date_time_limitations": {
+					"activation_date": {Optional: true},
+					"no_execute_end":  {Optional: true},
+				},
+				"dock_items": {
+					"leave_existing_default": {Optional: true},
+				},
+			},
+		},
+	}
+
+	stripNullAttributes(body, "jamfplatform_pro_policy", "", schema)
+	result := string(f.Bytes())
+
+	lines := strings.Split(result, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			continue
+		}
+		// A blank line is only legitimate between top-level blocks (depth 0).
+		// Inside an object expression the previous non-empty line ends in "{".
+		prev := ""
+		for j := i - 1; j >= 0; j-- {
+			if strings.TrimSpace(lines[j]) != "" {
+				prev = strings.TrimSpace(lines[j])
+				break
+			}
+		}
+		if strings.HasSuffix(prev, "{") || strings.HasSuffix(prev, "=") {
+			t.Errorf("blank line inside object expression after %q:\n%s", prev, result)
+		}
+	}
+	// Empty dock_items must not become "{\n\n}".
+	if strings.Contains(result, "{\n\n") {
+		t.Errorf("object expression has blank line after opening brace:\n%s", result)
 	}
 }
 

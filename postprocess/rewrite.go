@@ -124,12 +124,7 @@ func descendObjectExpr(exprBytes []byte, attrPath []string, fn func(leaf *hclwri
 		return nil, false
 	}
 
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	buf.WriteByte('\n')
-	buf.Write(f.Bytes())
-	buf.WriteByte('}')
-	return buf.Bytes(), true
+	return wrapObjectInner(f.Bytes()), true
 }
 
 // isSentinelID reports whether an ID value is a Jamf "none"/"unset" sentinel
