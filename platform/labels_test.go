@@ -345,12 +345,42 @@ func TestRenameLabels_TopLevelNameStillWins(t *testing.T) {
 	}
 }
 
+// TestRenameLabels_PackageUsesDisplayName covers jamfplatform_pro_package, whose
+// human label lives in display_name (it has no top-level name attribute).
+func TestRenameLabels_PackageUsesDisplayName(t *testing.T) {
+	dir := t.TempDir()
+	generatedFile := filepath.Join(dir, "generated.tf")
+
+	src := `resource "jamfplatform_pro_package" "all_0" {
+  display_name = "Google Chrome.pkg"
+  file_name    = "Google Chrome.pkg"
+}
+`
+	if err := os.WriteFile(generatedFile, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RenameLabels(generatedFile); err != nil {
+		t.Fatalf("RenameLabels: %v", err)
+	}
+
+	result, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if body := string(result); !strings.Contains(body, `"jamfplatform_pro_package" "google_chrome_pkg"`) {
+		t.Errorf("expected package renamed from display_name, got:\n%s", body)
+	}
+}
+
 func TestNameAttrForType(t *testing.T) {
 	tests := []struct {
 		resourceType string
 		want         string
 	}{
 		{"jamfplatform_cbengine_benchmark", "title"},
+		{"jamfplatform_pro_package", "display_name"},
 		{"jamfplatform_blueprints_blueprint", "name"},
 		{"jamfplatform_device_group", "name"},
 		{"some_unknown_type", "name"},

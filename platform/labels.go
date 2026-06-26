@@ -13,6 +13,8 @@ func nameAttrForType(resourceType string) string {
 	switch resourceType {
 	case "jamfplatform_cbengine_benchmark":
 		return "title"
+	case "jamfplatform_pro_package":
+		return "display_name"
 	default:
 		return "name"
 	}
