@@ -27,9 +27,13 @@ func TestPlatformTypeToFileMap(t *testing.T) {
 		}
 	}
 
-	// 3 native + 60 listable pro_* + 27 singleton pro_* = 90.
-	if got := len(m); got != 90 {
-		t.Errorf("TypeToFileMap has %d entries, expected 90", got)
+	// 3 native + 60 listable pro_* + 27 singleton pro_* + 1 synthesised
+	// jamfplatform_pro_icon (no list resource) = 91.
+	if got := len(m); got != 91 {
+		t.Errorf("TypeToFileMap has %d entries, expected 91", got)
+	}
+	if _, ok := m["jamfplatform_pro_icon"]; !ok {
+		t.Error("missing file mapping for synthesised jamfplatform_pro_icon")
 	}
 }
 

@@ -61,6 +61,24 @@ func ReadObjectAttrString(body *hclwrite.Body, attrPath []string, attrName strin
 	return readLeafString(body, nil, attrPath, attrName)
 }
 
+// RemoveNestedAttrs removes the named attributes from the object expression at
+// attrPath within body, re-serializing the affected object expressions, and
+// returns whether anything changed. Exported for provider post-processing that
+// drops server-computed echo fields from a nested object (e.g. dropping a
+// self_service_icon's uri/filename so only the rewritten id reference remains).
+func RemoveNestedAttrs(body *hclwrite.Body, attrPath []string, names ...string) bool {
+	return withLeafBody(body, nil, attrPath, func(leaf *hclwrite.Body) bool {
+		changed := false
+		for _, n := range names {
+			if leaf.GetAttribute(n) != nil {
+				leaf.RemoveAttribute(n)
+				changed = true
+			}
+		}
+		return changed
+	})
+}
+
 // readLeafString navigates blockPath then attrPath from body and returns the
 // string value of attrName at the leaf container, or "" if absent. Read-only.
 func readLeafString(body *hclwrite.Body, blockPath, attrPath []string, attrName string) string {

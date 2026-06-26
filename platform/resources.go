@@ -162,10 +162,14 @@ func buildResources() []ResourceDef {
 // TypeToFileMap returns a map of TF resource type → output filename,
 // derived from the Resources table.
 func TypeToFileMap() map[string]string {
-	m := make(map[string]string, len(Resources))
+	m := make(map[string]string, len(Resources)+1)
 	for _, r := range Resources {
 		m[r.TFType] = r.OutputFile
 	}
+	// jamfplatform_pro_icon has no list resource (not query-discoverable); it is
+	// synthesized from self_service_icon references during post-processing, so it
+	// carries no Resources entry but still needs an output file for the splitter.
+	m[tIcon] = "pro_icon.tf"
 	return m
 }
 
@@ -244,6 +248,7 @@ const (
 	tVPPLocation = "jamfplatform_pro_volume_purchasing_location"
 	tSupervision = "jamfplatform_pro_supervision_identity"
 	tPatchTitle  = "jamfplatform_pro_patch_software_title"
+	tIcon        = "jamfplatform_pro_icon"
 )
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
@@ -398,6 +403,7 @@ func DefaultRules() []postprocess.ReferenceRule {
 		single(policy, "disk_encryption_configuration_id", tDiskEnc, "disk_encryption"),
 		single(policy, "remediate_disk_encryption_configuration_id", tDiskEnc, "disk_encryption"),
 		elem(policy, "categories", "id", tCategory, "self_service"),
+		single(policy, "id", tIcon, "self_service", "self_service_icon"),
 
 		// --- macOS configuration profile ---
 		cat(macProfile, "general"),

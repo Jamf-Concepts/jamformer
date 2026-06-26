@@ -195,6 +195,17 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
+	// 6c. Synthesise jamfplatform_pro_icon resources from self_service_icon
+	// references on policies (icons are not query-discoverable). Registers each
+	// icon so the self_service_icon.id reference rewrites in post-processing.
+	if iconCount, iconErr := GenerateIcons(generatedFile, reg); iconErr != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not synthesise icon resources: %v\n", iconErr)
+		}
+	} else if iconCount > 0 {
+		logStep("  Generated %d Self Service icon resource(s)", iconCount)
+	}
+
 	// 6b. Download package files resident in the Jamf Cloud Distribution Service.
 	// Only JCDS-resident files are fetchable (and only when a tenant ID is set —
 	// the pro endpoints are tenant-scoped); the rest stay as metadata + server
