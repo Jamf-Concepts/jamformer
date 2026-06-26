@@ -108,8 +108,24 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	if wroteSingletons {
 		logStep("Generating singleton settings configuration...")
 		singletonsFile := filepath.Join(opts.OutputDir, "singletons_generated.tf")
-		if err := terraform.GenerateConfig(opts.OutputDir, singletonsFile, platformEnv); err != nil {
-			return nil, fmt.Errorf("terraform plan (singletons): %w", err)
+		// The singleton plan only generates config for the singleton import
+		// blocks; it does not reference the main resources. Stage the (potentially
+		// very large) generated.tf out of the working directory for the duration
+		// of the plan so terraform does not re-parse it. A large config with
+		// inline script_contents (e.g. ~700KB compliance-benchmark scripts) makes
+		// `terraform plan` pathologically slow — script extraction to file()
+		// happens later in post-processing, so the inline form is still present
+		// at this point.
+		staged := generatedFile + ".staged"
+		if err := os.Rename(generatedFile, staged); err != nil {
+			return nil, fmt.Errorf("staging generated config for singleton plan: %w", err)
+		}
+		genErr := terraform.GenerateConfig(opts.OutputDir, singletonsFile, platformEnv)
+		if err := os.Rename(staged, generatedFile); err != nil {
+			return nil, fmt.Errorf("restoring generated config after singleton plan: %w", err)
+		}
+		if genErr != nil {
+			return nil, fmt.Errorf("terraform plan (singletons): %w", genErr)
 		}
 		if singletonData, err := os.ReadFile(singletonsFile); err == nil {
 			mainData, err := os.ReadFile(generatedFile)
