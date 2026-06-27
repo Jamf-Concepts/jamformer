@@ -174,6 +174,10 @@ func TypeToFileMap() map[string]string {
 	// via the federated pro SDK and materialised through import blocks, so it
 	// likewise carries no Resources entry but needs an output file.
 	m[tJamfConnect] = "pro_jamf_connect.tf"
+	// jamfplatform_pro_self_service_branding_image has no list resource; it is
+	// synthesised from the branding singletons' image-id references, so it too
+	// carries no Resources entry but needs an output file.
+	m[tBrandingImage] = "pro_self_service_branding_image.tf"
 	return m
 }
 
@@ -236,30 +240,31 @@ const (
 
 // Federated Jamf Pro target type names.
 const (
-	tCategory    = "jamfplatform_pro_category"
-	tSite        = "jamfplatform_pro_site"
-	tBuilding    = "jamfplatform_pro_building"
-	tDepartment  = "jamfplatform_pro_department"
-	tNetworkSeg  = "jamfplatform_pro_network_segment"
-	tiBeacon     = "jamfplatform_pro_ibeacon"
-	tUserGroup   = "jamfplatform_pro_user_group"
-	tScript      = "jamfplatform_pro_script"
-	tPackage     = "jamfplatform_pro_package"
-	tPrinter     = "jamfplatform_pro_printer"
-	tDockItem    = "jamfplatform_pro_dock_item"
-	tDirBinding  = "jamfplatform_pro_directory_binding"
-	tDiskEnc     = "jamfplatform_pro_disk_encryption_configuration"
-	tMacProfile  = "jamfplatform_pro_macos_configuration_profile"
-	tADE         = "jamfplatform_pro_automated_device_enrollment"
-	tEnrollCust  = "jamfplatform_pro_enrollment_customization"
-	tVPPLocation = "jamfplatform_pro_volume_purchasing_location"
-	tSupervision = "jamfplatform_pro_supervision_identity"
-	tPatchTitle  = "jamfplatform_pro_patch_software_title"
-	tIcon        = "jamfplatform_pro_icon"
-	tLDAP        = "jamfplatform_pro_ldap_server"
-	tReturnToSvc = "jamfplatform_pro_return_to_service"
-	tFileShareDP = "jamfplatform_pro_file_share_distribution_point"
-	tJamfConnect = "jamfplatform_pro_jamf_connect"
+	tCategory      = "jamfplatform_pro_category"
+	tSite          = "jamfplatform_pro_site"
+	tBuilding      = "jamfplatform_pro_building"
+	tDepartment    = "jamfplatform_pro_department"
+	tNetworkSeg    = "jamfplatform_pro_network_segment"
+	tiBeacon       = "jamfplatform_pro_ibeacon"
+	tUserGroup     = "jamfplatform_pro_user_group"
+	tScript        = "jamfplatform_pro_script"
+	tPackage       = "jamfplatform_pro_package"
+	tPrinter       = "jamfplatform_pro_printer"
+	tDockItem      = "jamfplatform_pro_dock_item"
+	tDirBinding    = "jamfplatform_pro_directory_binding"
+	tDiskEnc       = "jamfplatform_pro_disk_encryption_configuration"
+	tMacProfile    = "jamfplatform_pro_macos_configuration_profile"
+	tADE           = "jamfplatform_pro_automated_device_enrollment"
+	tEnrollCust    = "jamfplatform_pro_enrollment_customization"
+	tVPPLocation   = "jamfplatform_pro_volume_purchasing_location"
+	tSupervision   = "jamfplatform_pro_supervision_identity"
+	tPatchTitle    = "jamfplatform_pro_patch_software_title"
+	tIcon          = "jamfplatform_pro_icon"
+	tLDAP          = "jamfplatform_pro_ldap_server"
+	tReturnToSvc   = "jamfplatform_pro_return_to_service"
+	tFileShareDP   = "jamfplatform_pro_file_share_distribution_point"
+	tJamfConnect   = "jamfplatform_pro_jamf_connect"
+	tBrandingImage = "jamfplatform_pro_self_service_branding_image"
 )
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
@@ -571,6 +576,11 @@ func DefaultRules() []postprocess.ReferenceRule {
 		// profile_id is Int64 but the config profile's id is a string, so the
 		// resolved reference is wrapped in tonumber().
 		{ResourceType: tJamfConnect, AttrName: "profile_id", TargetTypes: []string{macProfile}, TargetAttr: "id", Numeric: true},
+
+		// --- Self Service branding images (synthesised; ids are Int64) ---
+		{ResourceType: "jamfplatform_pro_self_service_branding_macos", AttrName: "icon_id", TargetTypes: []string{tBrandingImage}, TargetAttr: "id", Numeric: true},
+		{ResourceType: "jamfplatform_pro_self_service_branding_macos", AttrName: "banner_image_id", TargetTypes: []string{tBrandingImage}, TargetAttr: "id", Numeric: true},
+		{ResourceType: "jamfplatform_pro_self_service_branding_ios", AttrName: "icon_id", TargetTypes: []string{tBrandingImage}, TargetAttr: "id", Numeric: true},
 
 		// --- macOS Onboarding (polymorphic self-service entity references) ---
 		{

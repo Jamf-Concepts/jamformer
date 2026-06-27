@@ -67,6 +67,11 @@ resource "jamfplatform_pro_jamf_connect" "corp" {
   profile_id           = 77
   auto_deployment_type = "PATCH_UPDATES"
 }
+
+resource "jamfplatform_pro_self_service_branding_macos" "singleton" {
+  icon_id         = 81
+  banner_image_id = 0
+}
 `
 	genFile := filepath.Join(dir, "generated.tf")
 	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
@@ -79,6 +84,7 @@ resource "jamfplatform_pro_jamf_connect" "corp" {
 	reg.Register("jamfplatform_pro_script", "44", "jamfplatform_pro_script.rotate")
 	reg.Register(DeviceGroupComputerType, "12", "jamfplatform_device_group.eng_computer")
 	reg.Register("jamfplatform_pro_macos_configuration_profile", "77", "jamfplatform_pro_macos_configuration_profile.wifi")
+	reg.Register("jamfplatform_pro_self_service_branding_image", "81", "jamfplatform_pro_self_service_branding_image.branding_image_81")
 
 	if err := postprocess.Process(dir, genFile, reg, &postprocess.ProcessOptions{
 		TypeToFileMap: TypeToFileMap(),
@@ -165,6 +171,19 @@ resource "jamfplatform_pro_jamf_connect" "corp" {
 	}
 	if !strings.Contains(string(jc), "tonumber(jamfplatform_pro_macos_configuration_profile.wifi.id)") {
 		t.Errorf("jamf_connect profile_id not rewritten to a tonumber() reference:\n%s", jc)
+	}
+
+	// Branding singleton icon_id (Int64) → branding image id (String), wrapped
+	// in tonumber(); banner_image_id = 0 (no image) stays literal.
+	br, err := os.ReadFile(filepath.Join(dir, "pro_self_service_branding_macos.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_self_service_branding_macos.tf: %v", err)
+	}
+	if !strings.Contains(string(br), "tonumber(jamfplatform_pro_self_service_branding_image.branding_image_81.id)") {
+		t.Errorf("branding icon_id not rewritten to a tonumber() reference:\n%s", br)
+	}
+	if !strings.Contains(string(br), "banner_image_id = 0") {
+		t.Errorf("banner_image_id = 0 (no image) should stay literal:\n%s", br)
 	}
 }
 

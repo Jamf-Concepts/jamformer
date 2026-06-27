@@ -27,17 +27,21 @@ func TestPlatformTypeToFileMap(t *testing.T) {
 		}
 	}
 
-	// 3 native + 60 listable pro_* + 27 singleton pro_* + 1 synthesised
-	// jamfplatform_pro_icon + 1 SDK-discovered jamfplatform_pro_jamf_connect
-	// (neither has a list resource) = 92.
-	if got := len(m); got != 92 {
-		t.Errorf("TypeToFileMap has %d entries, expected 92", got)
+	// 3 native + 60 listable pro_* + 27 singleton pro_* + 3 with no list
+	// resource: synthesised jamfplatform_pro_icon, SDK-discovered
+	// jamfplatform_pro_jamf_connect, and synthesised
+	// jamfplatform_pro_self_service_branding_image = 93.
+	if got := len(m); got != 93 {
+		t.Errorf("TypeToFileMap has %d entries, expected 93", got)
 	}
 	if _, ok := m["jamfplatform_pro_icon"]; !ok {
 		t.Error("missing file mapping for synthesised jamfplatform_pro_icon")
 	}
 	if _, ok := m["jamfplatform_pro_jamf_connect"]; !ok {
 		t.Error("missing file mapping for SDK-discovered jamfplatform_pro_jamf_connect")
+	}
+	if _, ok := m["jamfplatform_pro_self_service_branding_image"]; !ok {
+		t.Error("missing file mapping for synthesised jamfplatform_pro_self_service_branding_image")
 	}
 }
 

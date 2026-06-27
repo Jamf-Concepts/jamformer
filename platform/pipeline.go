@@ -230,6 +230,22 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		logStep("  Generated %d Self Service icon resource(s)", iconCount)
 	}
 
+	// 6d. Synthesise jamfplatform_pro_self_service_branding_image resources from
+	// the branding singletons' image-id references (no list resource). Downloads
+	// each image via the federated pro SDK; requires a tenant ID (pro endpoints
+	// are tenant-scoped). Registers each image so the singleton icon_id /
+	// banner_image_id references rewrite in post-processing.
+	if opts.TenantID != "" {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+		if imgCount, imgErr := GenerateBrandingImages(terraform.Ctx, pc, generatedFile, opts.OutputDir, reg); imgErr != nil {
+			if !opts.Quiet {
+				fmt.Printf("  Warning: could not synthesise branding image resources: %v\n", imgErr)
+			}
+		} else if imgCount > 0 {
+			logStep("  Generated %d Self Service branding image resource(s)", imgCount)
+		}
+	}
+
 	// 6b. Download package files resident in the Jamf Cloud Distribution Service.
 	// Only JCDS-resident files are fetchable (and only when a tenant ID is set —
 	// the pro endpoints are tenant-scoped); the rest stay as metadata + server
