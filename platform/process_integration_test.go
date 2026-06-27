@@ -380,3 +380,118 @@ resource "jamfplatform_device_group" "grp" {
 		t.Error("expected device group indexed by name")
 	}
 }
+
+// TestPlatformNewReferenceRules covers the reference rules added in the schema
+// audit: single device-group refs by .jamf_pro_id (string vs number fields),
+// the -2 distribution-point sentinel, patch-policy scope, class group refs, and
+// site/ldap/source single refs.
+func TestPlatformNewReferenceRules(t *testing.T) {
+	dir := t.TempDir()
+
+	generated := `
+resource "jamfplatform_pro_account" "admin" {
+  name           = "admin"
+  site_id        = "7"
+  ldap_server_id = "3"
+}
+
+resource "jamfplatform_pro_app_installer" "chrome" {
+  category_id    = "5"
+  site_id        = "7"
+  smart_group_id = "12"
+}
+
+resource "jamfplatform_pro_webhook" "hook" {
+  name           = "hook"
+  smart_group_id = 12
+}
+
+resource "jamfplatform_pro_jamf_parent_settings" "singleton" {
+  device_group_id = 20
+}
+
+resource "jamfplatform_pro_patch_policy" "patch" {
+  scope = {
+    targets = {
+      computer_group_ids = ["12"]
+      building_ids       = ["3"]
+    }
+  }
+}
+
+resource "jamfplatform_pro_class" "math" {
+  name                    = "Math"
+  site_id                 = "7"
+  mobile_device_group_ids = ["20"]
+  student_group_ids       = ["9"]
+}
+
+resource "jamfplatform_pro_file_share_distribution_point" "dp" {
+  name                         = "DP"
+  backup_distribution_point_id = "-2"
+}
+
+resource "jamfplatform_pro_return_to_service" "rts" {
+  name           = "RTS"
+  wifi_profile_id = "30"
+}
+`
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	reg.Register(tSite, "7", "jamfplatform_pro_site.hq")
+	reg.Register(tLDAP, "3", "jamfplatform_pro_ldap_server.corp")
+	reg.Register("jamfplatform_pro_category", "5", "jamfplatform_pro_category.apps")
+	reg.Register(tBuilding, "3", "jamfplatform_pro_building.hq")
+	reg.Register(tUserGroup, "9", "jamfplatform_pro_user_group.students")
+	reg.Register("jamfplatform_pro_mobile_device_configuration_profile", "30", "jamfplatform_pro_mobile_device_configuration_profile.wifi")
+	reg.Register(DeviceGroupComputerType, "12", "jamfplatform_device_group.all_managed_computer")
+	reg.Register(DeviceGroupMobileType, "20", "jamfplatform_device_group.ipads_mobile")
+
+	if err := postprocess.Process(dir, genFile, reg, &postprocess.ProcessOptions{
+		TypeToFileMap: TypeToFileMap(),
+		Rules:         DefaultRules(),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		return string(b)
+	}
+	want := map[string][]string{
+		"pro_account.tf": {"jamfplatform_pro_site.hq.id", "jamfplatform_pro_ldap_server.corp.id"},
+		"pro_app_installer.tf": {
+			"jamfplatform_pro_category.apps.id",
+			"jamfplatform_pro_site.hq.id",
+			"jamfplatform_device_group.all_managed_computer.jamf_pro_id", // string field, no wrap
+		},
+		"pro_webhook.tf":              {"tonumber(jamfplatform_device_group.all_managed_computer.jamf_pro_id)"}, // number field
+		"pro_jamf_parent_settings.tf": {"tonumber(jamfplatform_device_group.ipads_mobile.jamf_pro_id)"},
+		"pro_patch_policy.tf":         {"jamfplatform_device_group.all_managed_computer.jamf_pro_id", "jamfplatform_pro_building.hq.id"},
+		"pro_class.tf":                {"jamfplatform_device_group.ipads_mobile.jamf_pro_id", "jamfplatform_pro_user_group.students.id", "jamfplatform_pro_site.hq.id"},
+		"pro_return_to_service.tf":    {"jamfplatform_pro_mobile_device_configuration_profile.wifi.id"},
+	}
+	for file, subs := range want {
+		got := read(file)
+		for _, s := range subs {
+			if !strings.Contains(got, s) {
+				t.Errorf("%s missing %q:\n%s", file, s, got)
+			}
+		}
+	}
+	// The -2 cloud-DP sentinel must be left literal (not rewritten, no TODO).
+	dp := read("pro_file_share_distribution_point.tf")
+	if !strings.Contains(dp, `backup_distribution_point_id = "-2"`) {
+		t.Errorf("expected -2 DP sentinel left literal:\n%s", dp)
+	}
+	if strings.Contains(dp, "TODO: unresolved reference") {
+		t.Errorf("-2 sentinel should not be flagged unresolved:\n%s", dp)
+	}
+}

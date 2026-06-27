@@ -204,7 +204,10 @@ func descendObjectExpr(exprBytes []byte, attrPath []string, fn func(leaf *hclwri
 // category/site) and 0 (no enrollment customization) never name a real object
 // and must not be rewritten or flagged as unresolved.
 func isSentinelID(val string) bool {
-	return val == "-1" || val == "0"
+	// Jamf IDs are positive integers, so any non-positive value names no real
+	// object: -1 (no category/site/group), 0 (no enrollment customization), and
+	// -2 (the Jamf Cloud distribution point sentinel on distribution-point fields).
+	return val == "-1" || val == "0" || val == "-2"
 }
 
 // rewriteSingleAttribute replaces a single string ID with a resource reference.

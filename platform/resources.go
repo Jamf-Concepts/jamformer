@@ -265,6 +265,8 @@ const (
 	tFileShareDP   = "jamfplatform_pro_file_share_distribution_point"
 	tJamfConnect   = "jamfplatform_pro_jamf_connect"
 	tBrandingImage = "jamfplatform_pro_self_service_branding_image"
+	tClass         = "jamfplatform_pro_class"
+	tPatchSource   = "jamfplatform_pro_patch_external_source"
 )
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
@@ -417,6 +419,19 @@ func DefaultRules() []postprocess.ReferenceRule {
 		uiEnroll   = "jamfplatform_pro_user_initiated_enrollment_settings"
 		macOnboard = "jamfplatform_pro_macos_onboarding"
 		advVPPSrch = "jamfplatform_pro_advanced_volume_purchasing_content_search"
+
+		account      = "jamfplatform_pro_account"
+		accountGroup = "jamfplatform_pro_account_group"
+		appInstaller = "jamfplatform_pro_app_installer"
+		appRequest   = "jamfplatform_pro_app_request_settings"
+		selfSvcMacOS = "jamfplatform_pro_self_service_macos_settings"
+		class        = tClass
+		mdEnroll     = "jamfplatform_pro_mobile_device_enrollment_profile"
+		vppInvite    = "jamfplatform_pro_vpp_invitation"
+		webhook      = "jamfplatform_pro_webhook"
+		jamfParent   = "jamfplatform_pro_jamf_parent_settings"
+		fileShareDP  = tFileShareDP
+		jamfConnect  = tJamfConnect
 	)
 
 	rules := []postprocess.ReferenceRule{
@@ -618,6 +633,78 @@ func DefaultRules() []postprocess.ReferenceRule {
 			DiscriminatorMap:  map[string]string{"User Group": tUserGroup},
 			TargetAttr:        "name",
 		},
+
+		// --- Accounts / account groups (site + backing LDAP/cloud-IdP server) ---
+		site(account, "site_id"),
+		single(account, "ldap_server_id", tLDAP),
+		site(accountGroup, "site_id"),
+		single(accountGroup, "ldap_server_id", tLDAP),
+
+		// --- App installer ---
+		cat(appInstaller),
+		site(appInstaller, "site_id"),
+		elem(appInstaller, "categories", "category_id", tCategory, "self_service_settings"),
+		// smart_group_id is a string field → device group computer .jamf_pro_id (string).
+		{ResourceType: appInstaller, AttrName: "smart_group_id", TargetTypes: []string{DeviceGroupComputerType}, TargetAttr: "jamf_pro_id"},
+
+		// --- Settings singletons referencing other objects ---
+		single(appRequest, "requester_user_group_id", tUserGroup),
+		single(selfSvcMacOS, "default_home_category_id", tCategory),
+		// jamf_parent device_group_id is a number field → mobile group .jamf_pro_id (string), wrapped.
+		{ResourceType: jamfParent, AttrName: "device_group_id", TargetTypes: []string{DeviceGroupMobileType}, TargetAttr: "jamf_pro_id", Numeric: true},
+
+		// --- Site-only references ---
+		site(class, "site_id"),
+		site(mdEnroll, "site_id"),
+		site(vppNotif, "site_id"),
+		site(jamfConnect, "site_id"),
+		elem(uiEnroll, "access_group", "site_id", tSite),
+
+		// --- Patch ---
+		single(patchTitle, "source_id", tPatchSource),
+
+		// --- Return to Service (Wi-Fi profile is a mobile device config profile) ---
+		single(tReturnToSvc, "wifi_profile_id", mobProfile),
+
+		// --- VPP invitation ---
+		single(vppInvite, "vpp_account_id", vppLoc),
+		list(vppInvite, "jss_user_group_ids", tUserGroup, "scope", "targets"),
+		list(vppInvite, "jss_user_group_ids", tUserGroup, "scope", "exclusions"),
+		list(vppAssign, "jss_user_group_ids", tUserGroup, "scope", "targets"),
+		list(vppAssign, "jss_user_group_ids", tUserGroup, "scope", "exclusions"),
+
+		// --- Patch policy scope (computer-only; no user groups) ---
+		dg(patchPol, "computer_group_ids", DeviceGroupComputerType, "scope", "targets"),
+		list(patchPol, "building_ids", tBuilding, "scope", "targets"),
+		list(patchPol, "department_ids", tDepartment, "scope", "targets"),
+		dg(patchPol, "computer_group_ids", DeviceGroupComputerType, "scope", "exclusions"),
+		list(patchPol, "building_ids", tBuilding, "scope", "exclusions"),
+		list(patchPol, "department_ids", tDepartment, "scope", "exclusions"),
+		list(patchPol, "network_segment_ids", tNetworkSeg, "scope", "exclusions"),
+		list(patchPol, "ibeacon_ids", tiBeacon, "scope", "exclusions"),
+		list(patchPol, "network_segment_ids", tNetworkSeg, "scope", "limitations"),
+		list(patchPol, "ibeacon_ids", tiBeacon, "scope", "limitations"),
+
+		// --- Restricted software scope (buildings/departments; computer groups already wired) ---
+		list(restricted, "building_ids", tBuilding, "scope", "targets"),
+		list(restricted, "department_ids", tDepartment, "scope", "targets"),
+		list(restricted, "building_ids", tBuilding, "scope", "exclusions"),
+		list(restricted, "department_ids", tDepartment, "scope", "exclusions"),
+
+		// --- Class (mobile device groups + student/teacher user groups) ---
+		dg(class, "mobile_device_group_ids", DeviceGroupMobileType),
+		list(class, "student_group_ids", tUserGroup),
+		list(class, "teacher_group_ids", tUserGroup),
+
+		// --- eBook class scope ---
+		list(ebook, "class_ids", tClass, "scope", "targets"),
+
+		// --- Webhook (smart_group_id is a number field → computer group .jamf_pro_id, wrapped) ---
+		{ResourceType: webhook, AttrName: "smart_group_id", TargetTypes: []string{DeviceGroupComputerType}, TargetAttr: "jamf_pro_id", Numeric: true},
+
+		// --- Distribution-point references (self/file-share DP; -1/-2 sentinels skipped) ---
+		single(fileShareDP, "backup_distribution_point_id", tFileShareDP),
+		single(compPre, "custom_package_distribution_point_id", tFileShareDP),
 
 		// --- macOS Onboarding (polymorphic self-service entity references) ---
 		{
