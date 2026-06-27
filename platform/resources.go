@@ -586,6 +586,39 @@ func DefaultRules() []postprocess.ReferenceRule {
 		{ResourceType: "jamfplatform_pro_self_service_branding_macos", AttrName: "banner_image_id", TargetTypes: []string{tBrandingImage}, TargetAttr: "id", Numeric: true},
 		{ResourceType: "jamfplatform_pro_self_service_branding_ios", AttrName: "icon_id", TargetTypes: []string{tBrandingImage}, TargetAttr: "id", Numeric: true},
 
+		// --- Smart-group criteria "member of" references ---
+		// Device-group "Computer Group" / "Mobile Device Group" member-of criteria
+		// carry the target group's NAME in `value` (the device-group list path
+		// resolves the wire id back to a name); resolve to .name, scoped to the
+		// matching device_type via the criterion-name discriminator.
+		{
+			ResourceType:      "jamfplatform_device_group",
+			AttrName:          "criteria",
+			ElementAttr:       "value",
+			DiscriminatorAttr: "criteria",
+			DiscriminatorMap: map[string]string{
+				"Computer Group":      DeviceGroupComputerNameType,
+				"Mobile Device Group": DeviceGroupMobileNameType,
+			},
+			TargetAttr: "name",
+		},
+		// User-group "User Group" member-of criteria carry the target group's ID
+		// in `value` on read (Jamf 11.29 read regression — the user-group list path
+		// leaves it unresolved). Look it up by that id, but emit a reference to the
+		// group's .name: name is the provider's author-by-name contract (the write
+		// is a pure pass-through that accepts the name) and the provider's Read
+		// reverse-resolves the wire id back to the name in state, so a .name
+		// reference matches state directly instead of relying on id<->name plan
+		// suppression every apply.
+		{
+			ResourceType:      tUserGroup,
+			AttrName:          "criteria",
+			ElementAttr:       "value",
+			DiscriminatorAttr: "name",
+			DiscriminatorMap:  map[string]string{"User Group": tUserGroup},
+			TargetAttr:        "name",
+		},
+
 		// --- macOS Onboarding (polymorphic self-service entity references) ---
 		{
 			ResourceType:      macOnboard,

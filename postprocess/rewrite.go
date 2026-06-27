@@ -366,6 +366,81 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 	return buf.Bytes(), true
 }
 
+// RewriteListElementField rewrites elemAttr on each object element of the
+// list-of-objects attribute attrName in body. For each element it reads the
+// current string value of elemAttr and calls resolve(value); when resolve
+// returns (ref, true) the field is replaced with the raw ref token, otherwise
+// the element is left untouched (no TODO marker — unmatched values are expected,
+// e.g. built-in smart-group criteria). Returns true if any element changed.
+//
+// Exported for provider-specific criteria rewriting where the resolution target
+// depends on context the generic ReferenceRule engine cannot express from a
+// single element (e.g. the owning resource's device_type selecting which
+// extension-attribute name space to resolve against).
+func RewriteListElementField(body *hclwrite.Body, attrName, elemAttr string, resolve func(string) (string, bool)) bool {
+	attr := body.GetAttribute(attrName)
+	if attr == nil {
+		return false
+	}
+	exprBytes := bytes.TrimSpace(attr.Expr().BuildTokens(nil).Bytes())
+	if len(exprBytes) == 0 || exprBytes[0] != '[' {
+		return false
+	}
+	closeIdx := findMatchingDelimiter(exprBytes, 0)
+	if closeIdx == -1 || closeIdx != len(exprBytes)-1 {
+		return false
+	}
+
+	modified := false
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	i := 1
+	for i < closeIdx {
+		if exprBytes[i] != '{' {
+			buf.WriteByte(exprBytes[i])
+			i++
+			continue
+		}
+		objClose := findMatchingDelimiter(exprBytes, i)
+		if objClose == -1 || objClose > closeIdx {
+			buf.Write(exprBytes[i:closeIdx])
+			break
+		}
+		objBytes := exprBytes[i : objClose+1]
+		if processed, ok := descendObjectExpr(objBytes, nil, func(leaf *hclwrite.Body) bool {
+			a := leaf.GetAttribute(elemAttr)
+			if a == nil {
+				return false
+			}
+			val := ExtractStringValue(a)
+			if val == "" {
+				return false
+			}
+			ref, ok := resolve(val)
+			if !ok {
+				return false
+			}
+			leaf.SetAttributeRaw(elemAttr, referenceTokens(ref))
+			return true
+		}); ok {
+			buf.Write(processed)
+			modified = true
+		} else {
+			buf.Write(objBytes)
+		}
+		i = objClose + 1
+	}
+	buf.WriteByte(']')
+
+	if !modified {
+		return false
+	}
+	body.SetAttributeRaw(attrName, hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: buf.Bytes()},
+	})
+	return true
+}
+
 // discriminatorTarget reads the rule's DiscriminatorAttr from a list element and
 // maps its value to a target resource type via DiscriminatorMap. Returns false
 // when the discriminator is absent or its value is unmapped.

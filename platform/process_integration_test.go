@@ -228,3 +228,126 @@ import {
 		t.Error("vendor profile import file should not be written")
 	}
 }
+
+// TestPlatformCriteriaReferences exercises the smart-group criteria reference
+// resolution: device-group "member of" (by name), user-group "member of" (by
+// id), and extension-attribute-name criterion fields (by name, device_type
+// scoped), with built-in criteria left untouched.
+func TestPlatformCriteriaReferences(t *testing.T) {
+	dir := t.TempDir()
+
+	generated := `
+resource "jamfplatform_device_group" "all_managed" {
+  name        = "All Managed"
+  device_type = "computer"
+  group_type  = "smart"
+}
+
+resource "jamfplatform_pro_computer_extension_attribute" "admin_rights" {
+  name = "Administrator Rights"
+}
+
+resource "jamfplatform_device_group" "smart_grp" {
+  name        = "Smart Group"
+  device_type = "computer"
+  group_type  = "smart"
+  criteria = [
+    {
+      and_or   = "and"
+      criteria = "Computer Group"
+      operator = "member of"
+      order    = 0
+      value    = "All Managed"
+    },
+    {
+      and_or   = "and"
+      criteria = "Administrator Rights"
+      operator = "is"
+      order    = 1
+      value    = "Yes"
+    },
+    {
+      and_or   = "and"
+      criteria = "Application Bundle ID"
+      operator = "is"
+      order    = 2
+      value    = "com.example.app"
+    },
+  ]
+}
+
+resource "jamfplatform_pro_user_group" "members" {
+  name       = "Members"
+  group_type = "smart"
+  criteria = [
+    {
+      and_or      = "and"
+      name        = "User Group"
+      search_type = "member of"
+      priority    = 0
+      value       = "7"
+    },
+    {
+      and_or      = "and"
+      name        = "Managed Apple ID"
+      search_type = "like"
+      priority    = 1
+      value       = "@example.com"
+    },
+  ]
+}
+`
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	reg.Register("jamfplatform_pro_user_group", "7", "jamfplatform_pro_user_group.staff")
+
+	if err := PopulateCriteriaNameIndexes(genFile, reg); err != nil {
+		t.Fatalf("PopulateCriteriaNameIndexes: %v", err)
+	}
+	if _, err := ResolveCriteriaExtensionAttributes(genFile, reg); err != nil {
+		t.Fatalf("ResolveCriteriaExtensionAttributes: %v", err)
+	}
+	if err := postprocess.Process(dir, genFile, reg, &postprocess.ProcessOptions{
+		TypeToFileMap: TypeToFileMap(),
+		Rules:         DefaultRules(),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	dg, err := os.ReadFile(filepath.Join(dir, "device_groups.tf"))
+	if err != nil {
+		t.Fatalf("reading device_groups.tf: %v", err)
+	}
+	dgs := string(dg)
+	// (A) device-group member-of value -> .name
+	if !strings.Contains(dgs, "jamfplatform_device_group.all_managed.name") {
+		t.Errorf("device-group member-of not resolved to .name:\n%s", dgs)
+	}
+	// (C) EA-name criterion field -> EA .name
+	if !strings.Contains(dgs, "jamfplatform_pro_computer_extension_attribute.admin_rights.name") {
+		t.Errorf("EA criterion field not resolved:\n%s", dgs)
+	}
+	// built-in criterion left untouched
+	if !strings.Contains(dgs, `"Application Bundle ID"`) {
+		t.Errorf("built-in criterion should be untouched:\n%s", dgs)
+	}
+
+	ug, err := os.ReadFile(filepath.Join(dir, "pro_user_group.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_user_group.tf: %v", err)
+	}
+	ugs := string(ug)
+	// (B) user-group member-of value -> .name (looked up by the wire id "7";
+	// name is the provider's author-by-name contract).
+	if !strings.Contains(ugs, "jamfplatform_pro_user_group.staff.name") {
+		t.Errorf("user-group member-of not resolved to .name:\n%s", ugs)
+	}
+	// non-group criterion left untouched
+	if !strings.Contains(ugs, `"@example.com"`) {
+		t.Errorf("non-group user criterion should be untouched:\n%s", ugs)
+	}
+}

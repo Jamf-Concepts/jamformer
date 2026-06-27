@@ -219,6 +219,22 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
+	// 6a2. Register name→address indexes (device groups per device_type, EAs) and
+	// resolve EA-name criterion fields on device groups (device_type-scoped, so it
+	// can't be expressed as a generic rule). Device-group / user-group member-of
+	// values are resolved later by the DefaultRules discriminator engine, which
+	// relies on the device-group name index registered here.
+	if err := PopulateCriteriaNameIndexes(generatedFile, reg); err != nil && !opts.Quiet {
+		fmt.Printf("  Warning: could not build criteria name indexes: %v\n", err)
+	}
+	if eaCount, eaErr := ResolveCriteriaExtensionAttributes(generatedFile, reg); eaErr != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not resolve EA criteria references: %v\n", eaErr)
+		}
+	} else if eaCount > 0 {
+		logStep("  Resolved extension-attribute criteria on %d device group(s)", eaCount)
+	}
+
 	// 6c. Synthesise jamfplatform_pro_icon resources from self_service_icon
 	// references on policies (icons are not query-discoverable). Registers each
 	// icon so the self_service_icon.id reference rewrites in post-processing.
