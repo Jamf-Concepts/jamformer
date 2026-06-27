@@ -444,6 +444,17 @@ func ProvidersSchema(workDir string) (*tfjson.ProviderSchemas, error) {
 		return nil, err
 	}
 
+	// Suppress dev_overrides so the schema reflects the registry provider that
+	// init actually installed — not a locally-built provider in the user's
+	// ~/.terraform.d/terraform.tfrc (which terraform auto-loads). Without this
+	// the null-stripper would consult the wrong schema. Mirrors Validate().
+	if !AllowDevOverrides {
+		env := mergeProviderEnv(nil)
+		if err := tf.SetEnv(env); err != nil {
+			return nil, fmt.Errorf("setting terraform env: %w", err)
+		}
+	}
+
 	schemas, err := tf.ProvidersSchema(Ctx)
 	if err != nil {
 		return nil, fmt.Errorf("terraform providers schema: %w", err)
