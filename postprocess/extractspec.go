@@ -23,6 +23,10 @@ const (
 	FileKindMobileconfig
 	// FileKindXML writes a .xml file.
 	FileKindXML
+	// FileKindRaw writes a file with the literal extension given by ExtractSpec.Ext
+	// (e.g. ".ppd", ".mobileprovision"). Used for document-like content that is
+	// neither a guessable script nor a profile/XML payload.
+	FileKindRaw
 )
 
 // ExtractSpec declaratively describes a string attribute whose value should be
@@ -43,6 +47,9 @@ type ExtractSpec struct {
 	OutputSubdir string
 	// FileKind selects the file extension.
 	FileKind FileKind
+	// Ext is the literal file extension (including leading dot) used when
+	// FileKind is FileKindRaw; ignored for other kinds.
+	Ext string
 	// NameAttr names the attribute used to derive the filename (default "name").
 	NameAttr string
 	// NameAttrPath is the object-attribute path to the container holding NameAttr
@@ -97,13 +104,16 @@ func specContent(body *hclwrite.Body, spec ExtractSpec) string {
 	return readLeafString(body, spec.BlockPath, spec.AttrPath, spec.AttrName)
 }
 
-// fileExtFor returns the file extension for a FileKind.
-func fileExtFor(kind FileKind, content string) string {
+// fileExtFor returns the file extension for a FileKind. ext supplies the literal
+// extension for FileKindRaw and is ignored for the other kinds.
+func fileExtFor(kind FileKind, ext, content string) string {
 	switch kind {
 	case FileKindMobileconfig:
 		return ".mobileconfig"
 	case FileKindXML:
 		return ".xml"
+	case FileKindRaw:
+		return ext
 	default:
 		return guessScriptExtension(content)
 	}
@@ -113,9 +123,9 @@ func fileExtFor(kind FileKind, content string) string {
 // The guessed/known extension is appended only when the sanitized name does not
 // already end in it (case-insensitively), so a profile named
 // "Foo.mobileconfig" yields "Foo.mobileconfig", not "Foo.mobileconfig.mobileconfig".
-func buildExtractFileName(name string, kind FileKind, content string, fileNames map[string]int) string {
+func buildExtractFileName(name string, kind FileKind, rawExt, content string, fileNames map[string]int) string {
 	base := sanitizeFilename(name)
-	ext := fileExtFor(kind, content)
+	ext := fileExtFor(kind, rawExt, content)
 	if !strings.HasSuffix(strings.ToLower(base), ext) {
 		base += ext
 	}
@@ -155,7 +165,7 @@ func extractStringAttr(body *hclwrite.Body, spec ExtractSpec, absDir, relDir str
 			return false
 		}
 
-		fileName := buildExtractFileName(name, spec.FileKind, content, fileNames)
+		fileName := buildExtractFileName(name, spec.FileKind, spec.Ext, content, fileNames)
 		if err := os.WriteFile(filepath.Join(absDir, fileName), []byte(content), 0644); err != nil {
 			extractErr = fmt.Errorf("writing %s: %w", fileName, err)
 			return false

@@ -17,10 +17,10 @@ import (
 
 // PipelineOptions holds all parameters needed to run the Jamf Platform pipeline.
 type PipelineOptions struct {
-	OutputDir         string
-	BaseURL           string
-	ClientID          string
-	ClientSecret      string
+	OutputDir            string
+	BaseURL              string
+	ClientID             string
+	ClientSecret         string
 	TenantID             string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
 	SelectedResources    map[string]bool
 	SkipReferences       bool
@@ -111,14 +111,38 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		return nil, fmt.Errorf("terraform query: %w", queryErr)
 	}
 
+	// 3b. Discover Jamf Connect config-profile links via the federated pro SDK.
+	// jamfplatform_pro_jamf_connect has no list resource, so it is not
+	// query-discoverable; the SDK enumerates the linked profiles and we write
+	// import blocks now so the generate-config-out plan below materialises their
+	// config. Requires a tenant ID (pro endpoints are tenant-scoped).
+	wroteJamfConnect := false
+	jcSelected := opts.SelectedResources == nil || opts.SelectedResources["jamf_connect"]
+	if jcSelected {
+		if opts.TenantID == "" {
+			logStep("Skipping Jamf Connect discovery (set JAMF_TENANT_ID to enable — pro endpoints are tenant-scoped)")
+		} else {
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			if n, jcErr := DiscoverJamfConnect(terraform.Ctx, pc, opts.OutputDir); jcErr != nil {
+				if !opts.Quiet {
+					fmt.Printf("  Warning: Jamf Connect discovery failed: %v\n", jcErr)
+				}
+			} else if n > 0 {
+				wroteJamfConnect = true
+				logStep("  Discovered %d Jamf Connect config-profile link(s)", n)
+			}
+		}
+	}
+
 	// 4. Discover singleton settings: write import blocks, then generate their
-	// config via `terraform plan -generate-config-out`, and merge into generated.tf.
+	// config (and any Jamf Connect imports written above) via
+	// `terraform plan -generate-config-out`, and merge into generated.tf.
 	wroteSingletons, err := WriteSingletonImports(opts.OutputDir, opts.SelectedResources)
 	if err != nil {
 		return nil, fmt.Errorf("writing singleton imports: %w", err)
 	}
-	if wroteSingletons {
-		logStep("Generating singleton settings configuration...")
+	if wroteSingletons || wroteJamfConnect {
+		logStep("Generating settings and adopted-resource configuration...")
 		// Each singleton is read by `terraform plan -generate-config-out`, which
 		// emits one "Refreshing state..." line per import block — reuse the plan
 		// progress hook to show a per-singleton fraction.
@@ -263,6 +287,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	_ = os.Remove(generatedFile)
 	_ = os.Remove(filepath.Join(opts.OutputDir, "query.tfquery.hcl"))
 	_ = os.Remove(filepath.Join(opts.OutputDir, "singletons_import.tf"))
+	_ = os.Remove(filepath.Join(opts.OutputDir, "jamf_connect_import.tf"))
 
 	// 8. Validate and auto-fix conditionally invalid attributes
 	var providerSchema *postprocess.ProviderSchema

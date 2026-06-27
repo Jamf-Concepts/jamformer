@@ -170,15 +170,22 @@ func TypeToFileMap() map[string]string {
 	// synthesized from self_service_icon references during post-processing, so it
 	// carries no Resources entry but still needs an output file for the splitter.
 	m[tIcon] = "pro_icon.tf"
+	// jamfplatform_pro_jamf_connect has no list resource either; it is discovered
+	// via the federated pro SDK and materialised through import blocks, so it
+	// likewise carries no Resources entry but needs an output file.
+	m[tJamfConnect] = "pro_jamf_connect.tf"
 	return m
 }
 
 // ValidFilterNames returns a map of user-friendly filter names → canonical keys.
 func ValidFilterNames() map[string]string {
-	m := make(map[string]string, len(Resources))
+	m := make(map[string]string, len(Resources)+1)
 	for _, r := range Resources {
 		m[r.FilterKey] = r.FilterKey
 	}
+	// jamf_connect has no Resources entry (SDK-discovered, not query-listable),
+	// but is independently selectable via -include-resources / -exclude-resources.
+	m["jamf_connect"] = "jamf_connect"
 	return m
 }
 
@@ -252,6 +259,7 @@ const (
 	tLDAP        = "jamfplatform_pro_ldap_server"
 	tReturnToSvc = "jamfplatform_pro_return_to_service"
 	tFileShareDP = "jamfplatform_pro_file_share_distribution_point"
+	tJamfConnect = "jamfplatform_pro_jamf_connect"
 )
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
@@ -301,6 +309,27 @@ func ExtractSpecs() []postprocess.ExtractSpec {
 			NameAttrPath: []string{"general"},
 			OutputSubdir: "app_configurations",
 			FileKind:     postprocess.FileKindXML,
+		},
+		// Printers: the PPD driver descriptor at top-level ppd_contents. The
+		// provider's trimmedStringType normalises trailing whitespace, so a
+		// file() reference round-trips without drift. Only present when
+		// use_generic = false.
+		{
+			ResourceType: tPrinter,
+			AttrName:     "ppd_contents",
+			OutputSubdir: "printers",
+			FileKind:     postprocess.FileKindRaw,
+			Ext:          ".ppd",
+		},
+		// Mobile device provisioning profiles: the base64 signed .mobileprovision
+		// at top-level profile_data. Distributable signed document (not a secret);
+		// the provider stores it verbatim, so file() round-trips.
+		{
+			ResourceType: "jamfplatform_pro_mobile_device_provisioning_profile",
+			AttrName:     "profile_data",
+			OutputSubdir: "mobile_device_provisioning_profiles",
+			FileKind:     postprocess.FileKindRaw,
+			Ext:          ".mobileprovision",
 		},
 	}
 }
@@ -537,6 +566,11 @@ func DefaultRules() []postprocess.ReferenceRule {
 
 		// --- User-initiated enrollment settings (per access-group LDAP server) ---
 		elem(uiEnroll, "access_group", "ldap_server_id", tLDAP),
+
+		// --- Jamf Connect (adopts an existing macOS configuration profile) ---
+		// profile_id is Int64 but the config profile's id is a string, so the
+		// resolved reference is wrapped in tonumber().
+		{ResourceType: tJamfConnect, AttrName: "profile_id", TargetTypes: []string{macProfile}, TargetAttr: "id", Numeric: true},
 
 		// --- macOS Onboarding (polymorphic self-service entity references) ---
 		{

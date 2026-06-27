@@ -152,7 +152,11 @@ func rewriteSingleAttribute(body *hclwrite.Body, rule ReferenceRule, reg *regist
 	// Try to resolve via registry
 	for _, targetType := range rule.TargetTypes {
 		if ref, ok := reg.AttrReference(targetType, val, rule.TargetAttr); ok {
-			body.SetAttributeRaw(rule.AttrName, referenceTokens(ref))
+			if rule.Numeric {
+				body.SetAttributeRaw(rule.AttrName, numericReferenceTokens(ref))
+			} else {
+				body.SetAttributeRaw(rule.AttrName, referenceTokens(ref))
+			}
 			return true
 		}
 	}

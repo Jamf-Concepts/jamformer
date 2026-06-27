@@ -52,6 +52,15 @@ func referenceTokens(ref string) hclwrite.Tokens {
 	}
 }
 
+// numericReferenceTokens wraps a reference in tonumber(), for a number-typed
+// source attribute that points at a string-typed target attribute (e.g. an
+// Int64 profile_id referencing a config profile's string id).
+func numericReferenceTokens(ref string) hclwrite.Tokens {
+	return hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("tonumber(" + ref + ")")},
+	}
+}
+
 // todoTokens creates tokens for an unresolved reference with a TODO comment.
 func todoTokens(val string) hclwrite.Tokens {
 	return hclwrite.Tokens{

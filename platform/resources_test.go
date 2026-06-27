@@ -28,12 +28,16 @@ func TestPlatformTypeToFileMap(t *testing.T) {
 	}
 
 	// 3 native + 60 listable pro_* + 27 singleton pro_* + 1 synthesised
-	// jamfplatform_pro_icon (no list resource) = 91.
-	if got := len(m); got != 91 {
-		t.Errorf("TypeToFileMap has %d entries, expected 91", got)
+	// jamfplatform_pro_icon + 1 SDK-discovered jamfplatform_pro_jamf_connect
+	// (neither has a list resource) = 92.
+	if got := len(m); got != 92 {
+		t.Errorf("TypeToFileMap has %d entries, expected 92", got)
 	}
 	if _, ok := m["jamfplatform_pro_icon"]; !ok {
 		t.Error("missing file mapping for synthesised jamfplatform_pro_icon")
+	}
+	if _, ok := m["jamfplatform_pro_jamf_connect"]; !ok {
+		t.Error("missing file mapping for SDK-discovered jamfplatform_pro_jamf_connect")
 	}
 }
 
@@ -103,6 +107,10 @@ func TestPlatformValidFilterNames(t *testing.T) {
 			t.Errorf("missing filter name for %q", r.FilterKey)
 		}
 	}
+	// jamf_connect is SDK-discovered (no Resources entry) but selectable.
+	if _, ok := m["jamf_connect"]; !ok {
+		t.Error("missing filter name for jamf_connect")
+	}
 }
 
 func TestPlatformDefaultRulesCount(t *testing.T) {
@@ -124,6 +132,7 @@ func TestPlatformDefaultRulesCount(t *testing.T) {
 		"jamfplatform_pro_mobile_device_app",
 		"jamfplatform_pro_script",
 		"jamfplatform_pro_computer_prestage_enrollment",
+		"jamfplatform_pro_jamf_connect",
 	}
 	for _, rt := range expected {
 		if !ruleTypes[rt] {

@@ -37,6 +37,12 @@ type ReferenceRule struct {
 	// TargetAttr is the attribute on the target resource to reference (e.g. "id")
 	TargetAttr string
 
+	// Numeric indicates the source attribute is number-typed (e.g. an Int64
+	// profile_id) while the target attribute (TargetAttr) is a string. The
+	// resolved reference is wrapped in tonumber() so the assignment type-checks.
+	// Only honoured for single-attribute (non-list, non-element) rules.
+	Numeric bool
+
 	// IsList indicates the attribute is a list of IDs rather than a single ID.
 	IsList bool
 

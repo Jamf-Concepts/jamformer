@@ -50,6 +50,23 @@ resource "jamfplatform_pro_macos_configuration_profile" "wifi" {
     payloads    = "<?xml version=\"1.0\"?><plist><dict><key>k</key><string>v</string></dict></plist>"
   }
 }
+
+resource "jamfplatform_pro_printer" "lab" {
+  name         = "Lab LaserJet"
+  use_generic  = false
+  ppd_path     = "/Library/Printers/PPDs/Contents/Resources/Lab.ppd"
+  ppd_contents = "*PPD-Adobe: \"4.3\"\n*ModelName: \"Lab LaserJet\"\n*PCFileName: \"LAB.PPD\"\n"
+}
+
+resource "jamfplatform_pro_mobile_device_provisioning_profile" "enterprise" {
+  name         = "Enterprise App"
+  profile_data = "MIIabcdefBASE64mobileprovisionDATA=="
+}
+
+resource "jamfplatform_pro_jamf_connect" "corp" {
+  profile_id           = 77
+  auto_deployment_type = "PATCH_UPDATES"
+}
 `
 	genFile := filepath.Join(dir, "generated.tf")
 	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
@@ -61,6 +78,7 @@ resource "jamfplatform_pro_macos_configuration_profile" "wifi" {
 	reg.Register("jamfplatform_pro_building", "3", "jamfplatform_pro_building.hq")
 	reg.Register("jamfplatform_pro_script", "44", "jamfplatform_pro_script.rotate")
 	reg.Register(DeviceGroupComputerType, "12", "jamfplatform_device_group.eng_computer")
+	reg.Register("jamfplatform_pro_macos_configuration_profile", "77", "jamfplatform_pro_macos_configuration_profile.wifi")
 
 	if err := postprocess.Process(dir, genFile, reg, &postprocess.ProcessOptions{
 		TypeToFileMap: TypeToFileMap(),
@@ -109,6 +127,44 @@ resource "jamfplatform_pro_macos_configuration_profile" "wifi" {
 	}
 	if !strings.Contains(string(payload), "<plist>") {
 		t.Errorf("extracted payload missing plist content: %s", payload)
+	}
+
+	// Printer ppd_contents extracted to a .ppd file() reference (FileKindRaw).
+	printer, err := os.ReadFile(filepath.Join(dir, "pro_printer.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_printer.tf: %v", err)
+	}
+	if !strings.Contains(string(printer), `file("${path.module}/support_files/printers/Lab LaserJet.ppd")`) {
+		t.Errorf("printer ppd_contents not extracted to a file() reference:\n%s", printer)
+	}
+	ppd, err := os.ReadFile(filepath.Join(dir, "support_files", "printers", "Lab LaserJet.ppd"))
+	if err != nil {
+		t.Fatalf("reading extracted ppd: %v", err)
+	}
+	if !strings.Contains(string(ppd), "*PPD-Adobe") {
+		t.Errorf("extracted ppd missing PPD header: %s", ppd)
+	}
+
+	// Provisioning profile profile_data extracted to a .mobileprovision file() reference.
+	prov, err := os.ReadFile(filepath.Join(dir, "pro_mobile_device_provisioning_profile.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_mobile_device_provisioning_profile.tf: %v", err)
+	}
+	if !strings.Contains(string(prov), `file("${path.module}/support_files/mobile_device_provisioning_profiles/Enterprise App.mobileprovision")`) {
+		t.Errorf("provisioning profile_data not extracted to a file() reference:\n%s", prov)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "support_files", "mobile_device_provisioning_profiles", "Enterprise App.mobileprovision")); err != nil {
+		t.Errorf("extracted .mobileprovision file missing: %v", err)
+	}
+
+	// jamf_connect.profile_id (Int64) → macOS config profile id (String),
+	// wrapped in tonumber() so the assignment type-checks (Numeric rule).
+	jc, err := os.ReadFile(filepath.Join(dir, "pro_jamf_connect.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_jamf_connect.tf: %v", err)
+	}
+	if !strings.Contains(string(jc), "tonumber(jamfplatform_pro_macos_configuration_profile.wifi.id)") {
+		t.Errorf("jamf_connect profile_id not rewritten to a tonumber() reference:\n%s", jc)
 	}
 }
 
