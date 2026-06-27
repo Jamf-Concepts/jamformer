@@ -5,6 +5,8 @@ package postprocess
 import (
 	"bytes"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/Jamf-Concepts/jamformer/registry"
 	"github.com/hashicorp/hcl/v2"
@@ -49,6 +51,8 @@ func rewriteBlock(body *hclwrite.Body, blockPath []string, rule ReferenceRule, r
 // single ID. Returns true if the body was modified.
 func applyLeafRewrite(body *hclwrite.Body, rule ReferenceRule, reg *registry.Registry) bool {
 	switch {
+	case rule.EmbeddedIDs:
+		return rewriteEmbeddedIDs(body, rule, reg)
 	case rule.ElementAttr != "":
 		return rewriteListOfObjectsElement(body, rule, reg)
 	case rule.IsList:
@@ -56,6 +60,74 @@ func applyLeafRewrite(body *hclwrite.Body, rule ReferenceRule, reg *registry.Reg
 	default:
 		return rewriteSingleAttribute(body, rule, reg)
 	}
+}
+
+// uuidPattern matches a canonical UUID — the form device-group Platform ids take
+// when embedded in a blueprint activation_conditions expression.
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// rewriteEmbeddedIDs rewrites target-type ids embedded inside a free-form string
+// attribute into ${addr.TargetAttr} interpolations, leaving the surrounding text
+// and any unresolvable ids intact. Used for the blueprint activation_conditions
+// expression, where device-group UUIDs appear inside quoted-literal sets such as
+// IN {'<uuid>'}. Returns true if the attribute was modified.
+func rewriteEmbeddedIDs(body *hclwrite.Body, rule ReferenceRule, reg *registry.Registry) bool {
+	attr := body.GetAttribute(rule.AttrName)
+	if attr == nil {
+		return false
+	}
+	raw := extractFullStringValue(attr)
+	if raw == "" {
+		return false
+	}
+
+	locs := uuidPattern.FindAllStringIndex(raw, -1)
+	if len(locs) == 0 {
+		return false
+	}
+
+	var b strings.Builder
+	b.WriteByte('"')
+	last := 0
+	changed := false
+	for _, loc := range locs {
+		id := raw[loc[0]:loc[1]]
+		var ref string
+		for _, targetType := range rule.TargetTypes {
+			if r, ok := reg.AttrReference(targetType, id, rule.TargetAttr); ok {
+				ref = r
+				break
+			}
+		}
+		if ref == "" {
+			continue // unresolvable id: leave it inside the literal text
+		}
+		b.WriteString(hclEscapeLiteral(raw[last:loc[0]]))
+		b.WriteString("${" + ref + "}")
+		last = loc[1]
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	b.WriteString(hclEscapeLiteral(raw[last:]))
+	b.WriteByte('"')
+
+	body.SetAttributeRaw(rule.AttrName, hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(b.String())},
+	})
+	return true
+}
+
+// hclEscapeLiteral escapes a literal segment for embedding inside a double-quoted
+// HCL template string, neutralising any pre-existing ${ / %{ so only the
+// interpolations this package inserts are evaluated.
+func hclEscapeLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "${", "$${")
+	s = strings.ReplaceAll(s, "%{", "%%{")
+	return s
 }
 
 // withLeafBody navigates blockPath (live hclwrite blocks) then attrPath

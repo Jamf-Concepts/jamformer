@@ -422,6 +422,10 @@ func DefaultRules() []postprocess.ReferenceRule {
 	rules := []postprocess.ReferenceRule{
 		// --- Native Platform Services resources (reference device groups by UUID) ---
 		{ResourceType: "jamfplatform_blueprints_blueprint", AttrName: "device_groups", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", IsList: true},
+		// activation_conditions is a free-form expression that embeds device-group
+		// Platform UUIDs in quoted-literal sets; resolve each to a ${...id}
+		// interpolation so the condition tracks the group it points at.
+		{ResourceType: "jamfplatform_blueprints_blueprint", AttrName: "activation_conditions", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", EmbeddedIDs: true},
 		{ResourceType: "jamfplatform_cbengine_benchmark", AttrName: "target_device_group", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id"},
 
 		// --- Policy ---

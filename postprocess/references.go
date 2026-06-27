@@ -43,6 +43,13 @@ type ReferenceRule struct {
 	// Only honoured for single-attribute (non-list, non-element) rules.
 	Numeric bool
 
+	// EmbeddedIDs indicates AttrName is a free-form string that may contain one
+	// or more target-type ids embedded in surrounding text (e.g. device-group
+	// UUIDs inside a blueprint activation_conditions expression). Each resolvable
+	// UUID is replaced in place with a ${addr.TargetAttr} interpolation; the rest
+	// of the string and any unresolvable ids are left untouched.
+	EmbeddedIDs bool
+
 	// IsList indicates the attribute is a list of IDs rather than a single ID.
 	IsList bool
 

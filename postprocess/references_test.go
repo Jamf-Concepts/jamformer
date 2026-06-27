@@ -1562,3 +1562,45 @@ func TestProtectUnresolvedReference(t *testing.T) {
 		t.Errorf("Expected unresolved reference TODO comment, got:\n%s", result)
 	}
 }
+
+// TestEmbeddedDeviceGroupIDsInString tests that device-group UUIDs embedded in a
+// blueprint activation_conditions expression are rewritten to ${...id}
+// interpolations, with surrounding text and unresolvable ids left intact and the
+// result remaining valid HCL.
+func TestEmbeddedDeviceGroupIDsInString(t *testing.T) {
+	reg := registry.New()
+	reg.Register("jamfplatform_device_group", "fce3d9a5-8660-42ff-a95e-625e7b53b48a", "jamfplatform_device_group.shared_ipads")
+
+	f := parseHCLRef(t, `
+resource "jamfplatform_blueprints_blueprint" "test" {
+  name                  = "test"
+  activation_conditions = "ANY @property(jamf.device.groups) IN {'fce3d9a5-8660-42ff-a95e-625e7b53b48a', '11111111-2222-3333-4444-555555555555'} AND @status(device.model.family) == 'iPad'"
+}
+`)
+	body := refBlockBody(t, f)
+	rule := postprocess.ReferenceRule{
+		ResourceType: "jamfplatform_blueprints_blueprint",
+		AttrName:     "activation_conditions",
+		TargetTypes:  []string{"jamfplatform_device_group"},
+		TargetAttr:   "id",
+		EmbeddedIDs:  true,
+	}
+	postprocess.RewriteBlockForTest(body, rule.BlockPath, rule, reg)
+
+	result := string(f.Bytes())
+	if !strings.Contains(result, "${jamfplatform_device_group.shared_ipads.id}") {
+		t.Errorf("expected embedded device-group interpolation, got:\n%s", result)
+	}
+	// Unresolvable UUID stays literal.
+	if !strings.Contains(result, "11111111-2222-3333-4444-555555555555") {
+		t.Errorf("expected unresolvable UUID left intact, got:\n%s", result)
+	}
+	// Surrounding expression preserved.
+	if !strings.Contains(result, "@status(device.model.family) == 'iPad'") {
+		t.Errorf("expected surrounding expression preserved, got:\n%s", result)
+	}
+	// Result must still be valid HCL.
+	if _, diags := hclwrite.ParseConfig(f.Bytes(), "out.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL no longer parses: %s\n%s", diags.Error(), result)
+	}
+}
