@@ -14,13 +14,20 @@ import (
 // ExtractStringValue extracts a string or numeric literal from an HCL
 // attribute's expression tokens. Exported for use by provider packages.
 func ExtractStringValue(attr *hclwrite.Attribute) string {
-	tokens := attr.Expr().BuildTokens(nil)
+	if attr == nil {
+		return ""
+	}
+	return tokensStringValue(attr.Expr().BuildTokens(nil))
+}
+
+// tokensStringValue extracts the first string or numeric literal from a token
+// stream (quoted literals take precedence over numeric).
+func tokensStringValue(tokens hclwrite.Tokens) string {
 	for _, tok := range tokens {
 		if tok.Type == hclsyntax.TokenQuotedLit {
 			return string(tok.Bytes)
 		}
 	}
-	// Also try numeric literals (some IDs come as numbers)
 	for _, tok := range tokens {
 		if tok.Type == hclsyntax.TokenNumberLit {
 			return string(tok.Bytes)

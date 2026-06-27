@@ -987,8 +987,9 @@ func main() {
 		}
 	}
 
-	// Prompt to split output files by category (Jamf Pro only)
-	if !isProtect && !isPlatform && !isJSC && interactive && !*splitByCategory {
+	// Prompt to split output files by category (Jamf Pro and Jamf Platform —
+	// both have categories; Protect and JSC do not)
+	if !isProtect && !isJSC && interactive && !*splitByCategory {
 		reader := bufio.NewReader(os.Stdin)
 		answer := promptLine(reader, fmt.Sprintf("Split output files by category? %s(e.g. policies_production.tf) [y/N]%s: ", uDim, uReset))
 		answer = strings.ToLower(strings.TrimSpace(answer))
@@ -1056,6 +1057,7 @@ func main() {
 			SelectedResources:    selectedResources,
 			SkipReferences:       *skipReferences,
 			SkipPackageDownloads: *skipPackageDownloads,
+			SplitByCategory:      *splitByCategory,
 			ProviderVersion:      *providerVersionFlag,
 			Quiet:                quiet,
 			Verbose:              *verbose,

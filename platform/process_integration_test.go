@@ -351,3 +351,32 @@ resource "jamfplatform_pro_user_group" "members" {
 		t.Errorf("non-group user criterion should be untouched:\n%s", ugs)
 	}
 }
+
+// TestPopulateCriteriaNameIndexesNoTopLevelName guards against the panic where a
+// resource carrying its name nested (general.name) has no top-level "name" attr.
+func TestPopulateCriteriaNameIndexesNoTopLevelName(t *testing.T) {
+	dir := t.TempDir()
+	gen := `resource "jamfplatform_pro_policy" "p" {
+  general = {
+    name = "Deploy"
+  }
+}
+
+resource "jamfplatform_device_group" "grp" {
+  name        = "All Managed"
+  device_type = "computer"
+}
+`
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(gen), 0644); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New()
+	if err := PopulateCriteriaNameIndexes(genFile, reg); err != nil {
+		t.Fatalf("PopulateCriteriaNameIndexes: %v", err)
+	}
+	// The device group was indexed by name; the policy (no top-level name) was skipped without panicking.
+	if _, ok := reg.Resolve(DeviceGroupComputerNameType, "All Managed"); !ok {
+		t.Error("expected device group indexed by name")
+	}
+}

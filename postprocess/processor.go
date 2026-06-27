@@ -85,9 +85,17 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	// Determine which resource types should be split into per-category files.
 	// Only active when SplitByCategory is set and categories were discovered
 	// (otherwise everything would land in *_uncategorised.tf).
-	var catSplitTypes map[string]bool
-	if opts.SplitByCategory && reg.HasType("jamfpro_category") {
-		catSplitTypes = categorySplitTypes(rules)
+	var catSplitTypes map[string]ReferenceRule
+	if opts.SplitByCategory {
+		cats := categorySplitTypes(rules)
+		// Only activate when the category type actually has discovered entries —
+		// otherwise everything would land in *_uncategorised.tf.
+		for _, r := range cats {
+			if reg.HasType(categoryTargetType(r)) {
+				catSplitTypes = cats
+				break
+			}
+		}
 	}
 	categoryFileMap := make(map[string]*hclwrite.File)    // "type:category" → file
 	labelCategories := make(map[string]map[string]string) // resourceType → (label → categoryLabel)
@@ -246,7 +254,13 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		// Determine category label for per-category file splitting. Must happen
 		// before -1 removal strips the attribute and before reference rewriting.
 		var categoryLabel string
-		if catSplitTypes[resourceType] {
+		// Pre-detection only applies to flat top-level category_id rules (Jamf Pro),
+		// where the -1 removal below would strip the attribute before the post-rewrite
+		// extraction. Nested rules (Jamf Platform: general.category_id) have no -1
+		// removal, so they are resolved after rewriting at the extractCategoryLabel
+		// step below — pre-detecting them here would wrongly mark them uncategorised
+		// (the attribute is absent at the top level).
+		if rule, ok := catSplitTypes[resourceType]; ok && len(rule.AttrPath) == 0 {
 			if attr := block.Body().GetAttribute("category_id"); attr != nil {
 				exprBytes := strings.TrimSpace(string(attr.Expr().BuildTokens(nil).Bytes()))
 				if exprBytes == "-1" || exprBytes == "\"-1\"" {
@@ -301,8 +315,8 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 		// Extract category label from rewritten reference (if not already
 		// determined as uncategorised from -1 removal above)
-		if catSplitTypes[resourceType] && categoryLabel == "" {
-			categoryLabel = extractCategoryLabel(block.Body(), reg)
+		if rule, ok := catSplitTypes[resourceType]; ok && categoryLabel == "" {
+			categoryLabel = extractCategoryLabel(block.Body(), rule, reg)
 			if categoryLabel == "" {
 				categoryLabel = "uncategorised"
 			}
@@ -587,7 +601,7 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 
 		// Append to the appropriate file (per-category or per-type)
-		if catSplitTypes[resourceType] {
+		if _, ok := catSplitTypes[resourceType]; ok {
 			key := resourceType + ":" + categoryLabel
 			outFile, ok := categoryFileMap[key]
 			if !ok {

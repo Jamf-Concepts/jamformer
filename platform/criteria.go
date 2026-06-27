@@ -50,6 +50,14 @@ func PopulateCriteriaNameIndexes(generatedFile string, reg *registry.Registry) e
 		if len(labels) < 2 {
 			continue
 		}
+		// Only device groups and extension attributes are name-indexed; reading a
+		// top-level "name" before this check would panic on types that carry their
+		// name nested (e.g. jamfplatform_pro_policy → general.name).
+		switch labels[0] {
+		case "jamfplatform_device_group", tComputerEA, tMobileEA:
+		default:
+			continue
+		}
 		name := postprocess.ExtractStringValue(block.Body().GetAttribute("name"))
 		if name == "" {
 			continue

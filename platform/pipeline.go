@@ -25,6 +25,7 @@ type PipelineOptions struct {
 	SelectedResources    map[string]bool
 	SkipReferences       bool
 	SkipPackageDownloads bool
+	SplitByCategory      bool
 	ProviderVersion      string
 	Quiet                bool
 	Verbose              bool
@@ -306,6 +307,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		Rules:                   DefaultRules(),
 		ExtractSpecs:            ExtractSpecs(),
 		SkipReferences:          opts.SkipReferences,
+		SplitByCategory:         opts.SplitByCategory,
 		ProviderSchemas:         schemas,
 		InjectRequiredWriteOnly: true,
 		PlatformPackageFiles:    packageFiles,

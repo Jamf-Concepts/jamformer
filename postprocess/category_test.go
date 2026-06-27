@@ -23,16 +23,20 @@ func TestCategorySplitTypes(t *testing.T) {
 
 	got := categorySplitTypes(rules)
 
-	if !got["jamfpro_script"] {
+	if _, ok := got["jamfpro_script"]; !ok {
 		t.Error("expected jamfpro_script to be a category split type")
 	}
-	if !got["jamfpro_policy"] {
+	if _, ok := got["jamfpro_policy"]; !ok {
 		t.Error("expected jamfpro_policy to be a category split type")
 	}
 	if len(got) != 2 {
 		t.Errorf("expected 2 types, got %d", len(got))
 	}
 }
+
+// scriptCatRule is the flat top-level category_id rule used by the
+// extractCategoryLabel tests.
+var scriptCatRule = ReferenceRule{ResourceType: "jamfpro_script", AttrName: "category_id", TargetTypes: []string{"jamfpro_category"}, TargetAttr: "id"}
 
 func TestCategorySplitTypesEmpty(t *testing.T) {
 	got := categorySplitTypes(nil)
@@ -49,7 +53,7 @@ resource "jamfpro_script" "test" {
 }`)
 		body := blockBody(t, f)
 
-		got := extractCategoryLabel(body, nil)
+		got := extractCategoryLabel(body, scriptCatRule, nil)
 		if got != "productivity" {
 			t.Errorf("got %q, want %q", got, "productivity")
 		}
@@ -65,7 +69,7 @@ resource "jamfpro_script" "test" {
 }`)
 		body := blockBody(t, f)
 
-		got := extractCategoryLabel(body, reg)
+		got := extractCategoryLabel(body, scriptCatRule, reg)
 		if got != "testing" {
 			t.Errorf("got %q, want %q", got, "testing")
 		}
@@ -78,7 +82,7 @@ resource "jamfpro_script" "test" {
 }`)
 		body := blockBody(t, f)
 
-		got := extractCategoryLabel(body, nil)
+		got := extractCategoryLabel(body, scriptCatRule, nil)
 		if got != "" {
 			t.Errorf("got %q, want empty string", got)
 		}
@@ -93,7 +97,7 @@ resource "jamfpro_script" "test" {
 }`)
 		body := blockBody(t, f)
 
-		got := extractCategoryLabel(body, reg)
+		got := extractCategoryLabel(body, scriptCatRule, reg)
 		if got != "" {
 			t.Errorf("got %q, want empty string", got)
 		}
@@ -109,7 +113,7 @@ resource "jamfpro_script" "test" {
 }`)
 		body := blockBody(t, f)
 
-		got := extractCategoryLabel(body, reg)
+		got := extractCategoryLabel(body, scriptCatRule, reg)
 		if got != "production" {
 			t.Errorf("got %q, want %q", got, "production")
 		}
@@ -521,5 +525,67 @@ func TestProcessNoCategorySplitWhenNoRules(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "Head Office") {
 		t.Error("expected building in buildings.tf")
+	}
+}
+
+// TestProcessCategorySplittingNested exercises split-by-category for a Jamf
+// Platform-style resource whose category_id lives in a nested object attribute
+// (general = { category_id = ... }), driven by an AttrPath category rule.
+func TestProcessCategorySplittingNested(t *testing.T) {
+	dir := t.TempDir()
+
+	generatedContent := `resource "jamfplatform_pro_policy" "deploy_prod" {
+  general = {
+    name        = "Deploy Prod"
+    category_id = "5"
+  }
+}
+
+resource "jamfplatform_pro_policy" "deploy_none" {
+  general = {
+    name = "Deploy None"
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "generated.tf"), []byte(generatedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	reg.Register("jamfplatform_pro_category", "5", "jamfplatform_pro_category.production")
+
+	typeMap := map[string]string{"jamfplatform_pro_policy": "pro_policy.tf"}
+	rules := []ReferenceRule{
+		{ResourceType: "jamfplatform_pro_policy", AttrPath: []string{"general"}, AttrName: "category_id", TargetTypes: []string{"jamfplatform_pro_category"}, TargetAttr: "id"},
+	}
+
+	Quiet = true
+	defer func() { Quiet = false }()
+
+	if err := Process(dir, filepath.Join(dir, "generated.tf"), reg, &ProcessOptions{
+		TypeToFileMap:   typeMap,
+		Rules:           rules,
+		SplitByCategory: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prod, err := os.ReadFile(filepath.Join(dir, "pro_policy_production.tf"))
+	if err != nil {
+		t.Fatalf("expected pro_policy_production.tf: %v", err)
+	}
+	if !strings.Contains(string(prod), "deploy_prod") {
+		t.Errorf("expected deploy_prod in production file:\n%s", prod)
+	}
+	if !strings.Contains(string(prod), "jamfplatform_pro_category.production.id") {
+		t.Errorf("expected rewritten nested category reference:\n%s", prod)
+	}
+
+	uncat, err := os.ReadFile(filepath.Join(dir, "pro_policy_uncategorised.tf"))
+	if err != nil {
+		t.Fatalf("expected pro_policy_uncategorised.tf: %v", err)
+	}
+	if !strings.Contains(string(uncat), "deploy_none") {
+		t.Errorf("expected deploy_none in uncategorised file:\n%s", uncat)
 	}
 }
