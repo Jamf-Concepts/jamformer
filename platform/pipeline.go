@@ -321,17 +321,6 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		logStep("  Stripped %d compliance-benchmark-derived resource(s)", stripped)
 	}
 
-	// 6a2. Correct attribute combinations the provider rejects in its plan-time
-	// ValidateConfig (which `terraform validate` doesn't surface), so the export
-	// plans cleanly.
-	if corrected, err := FixConditionalAttributes(generatedFile); err != nil {
-		if !opts.Quiet {
-			fmt.Printf("  Warning: could not apply conditional attribute fixes: %v\n", err)
-		}
-	} else if corrected > 0 {
-		logStep("  Corrected %d conditionally-invalid attribute(s)", corrected)
-	}
-
 	if !opts.Quiet {
 		counts, _ := CountResources(generatedFile)
 		for resourceType, count := range counts {

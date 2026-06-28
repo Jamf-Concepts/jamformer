@@ -21,31 +21,42 @@ func ExtractStringValue(attr *hclwrite.Attribute) string {
 }
 
 // tokensStringValue extracts the first string or numeric literal from a token
-// stream (quoted literals take precedence over numeric).
+// stream (quoted literals take precedence over numeric). A numeric literal
+// preceded by a unary minus is returned with its sign, since HCL tokenises a
+// negative number like -1 as TokenMinus + TokenNumberLit — dropping the sign
+// would turn the sentinel -1 ("none") into a positive id and corrupt the value.
 func tokensStringValue(tokens hclwrite.Tokens) string {
 	for _, tok := range tokens {
 		if tok.Type == hclsyntax.TokenQuotedLit {
 			return string(tok.Bytes)
 		}
 	}
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		if tok.Type == hclsyntax.TokenNumberLit {
+			if i > 0 && tokens[i-1].Type == hclsyntax.TokenMinus {
+				return "-" + string(tok.Bytes)
+			}
 			return string(tok.Bytes)
 		}
 	}
 	return ""
 }
 
-// extractListValues extracts string or numeric values from a list expression.
+// extractListValues extracts string or numeric values from a list expression,
+// preserving a leading unary minus on negative numbers (see tokensStringValue).
 func extractListValues(attr *hclwrite.Attribute) []string {
 	tokens := attr.Expr().BuildTokens(nil)
 	var values []string
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		switch tok.Type {
 		case hclsyntax.TokenQuotedLit:
 			values = append(values, string(tok.Bytes))
 		case hclsyntax.TokenNumberLit:
-			values = append(values, string(tok.Bytes))
+			if i > 0 && tokens[i-1].Type == hclsyntax.TokenMinus {
+				values = append(values, "-"+string(tok.Bytes))
+			} else {
+				values = append(values, string(tok.Bytes))
+			}
 		}
 	}
 	return values
