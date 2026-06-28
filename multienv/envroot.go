@@ -18,25 +18,25 @@ import (
 // generateEnvRoot creates the full environment root directory with main.tf,
 // backend.tf, variables.tf, terraform.tfvars, imports.tf, and divergent
 // support files.
-func generateEnvRoot(outputDir string, env EnvConfig, matches []MatchedResource, diffs []AttrDiff, divergent []ClassifiedFile, fileVars []ModuleVar, pinnedVersion, resolvedVersion string, tokenRefreshPeriod int) error {
+func generateEnvRoot(outputDir string, prov Provider, env EnvConfig, matches []MatchedResource, moduleAddrs map[string]bool, diffs []AttrDiff, divergent []ClassifiedFile, fileVars []ModuleVar, pinnedVersion, resolvedVersion string, tokenRefreshPeriod int) error {
 	envDir := filepath.Join(outputDir, "environments", env.Name)
 	if err := os.MkdirAll(envDir, 0755); err != nil {
 		return fmt.Errorf("creating env directory %s: %w", env.Name, err)
 	}
 
-	if err := generateEnvMainTF(envDir, env, diffs, fileVars, pinnedVersion, resolvedVersion, tokenRefreshPeriod); err != nil {
+	if err := generateEnvMainTF(envDir, prov, env, diffs, fileVars, pinnedVersion, resolvedVersion, tokenRefreshPeriod); err != nil {
 		return fmt.Errorf("generating main.tf for %s: %w", env.Name, err)
 	}
 	if err := generateEnvBackendTF(envDir, env.Name); err != nil {
 		return fmt.Errorf("generating backend.tf for %s: %w", env.Name, err)
 	}
-	if err := generateEnvVariablesTF(envDir, env, diffs, fileVars); err != nil {
+	if err := generateEnvVariablesTF(envDir, prov, env, diffs, fileVars); err != nil {
 		return fmt.Errorf("generating variables.tf for %s: %w", env.Name, err)
 	}
 	if err := generateEnvTfvars(envDir, env.Name, diffs); err != nil {
 		return fmt.Errorf("generating terraform.tfvars for %s: %w", env.Name, err)
 	}
-	if err := generateEnvImports(envDir, matches, env.Name); err != nil {
+	if err := generateEnvImports(envDir, matches, moduleAddrs, env.Name); err != nil {
 		return fmt.Errorf("generating imports.tf for %s: %w", env.Name, err)
 	}
 	if err := placeDivergentFiles(envDir, env.Name, outputDir, divergent); err != nil {
@@ -47,20 +47,8 @@ func generateEnvRoot(outputDir string, env EnvConfig, matches []MatchedResource,
 }
 
 // generateEnvMainTF writes the main.tf with provider config and module call.
-func generateEnvMainTF(envDir string, env EnvConfig, diffs []AttrDiff, fileVars []ModuleVar, pinnedVersion, resolvedVersion string, tokenRefreshPeriod int) error {
+func generateEnvMainTF(envDir string, prov Provider, env EnvConfig, diffs []AttrDiff, fileVars []ModuleVar, pinnedVersion, resolvedVersion string, tokenRefreshPeriod int) error {
 	versionLine := terraform.FormatVersionConstraint(pinnedVersion, resolvedVersion)
-
-	var providerAttrs string
-	if env.AuthMethod == "oauth2" {
-		providerAttrs = `  client_id             = var.jamfpro_client_id
-  client_secret         = var.jamfpro_client_secret`
-		if tokenRefreshPeriod > 0 {
-			providerAttrs += fmt.Sprintf("\n  token_refresh_buffer_period_seconds = %d", tokenRefreshPeriod)
-		}
-	} else {
-		providerAttrs = `  basic_auth_username   = var.jamfpro_basic_auth_username
-  basic_auth_password   = var.jamfpro_basic_auth_password`
-	}
 
 	// Build module call arguments: collect all entries, sort, group by resource type
 	type moduleArg struct {
@@ -112,24 +100,11 @@ func generateEnvMainTF(envDir string, env EnvConfig, diffs []AttrDiff, fileVars 
 		prevType = a.resourceType
 	}
 
-	content := fmt.Sprintf(`terraform {
-  required_providers {
-    jamfpro = {
-      source = "deploymenttheory/jamfpro"%s
-    }
-  }
-}
-
-provider "jamfpro" {
-  jamfpro_instance_fqdn = var.jamfpro_instance_url
-  auth_method           = var.jamfpro_auth_method
-%s
-}
-
+	content := fmt.Sprintf(`%s
 module "jamf" {
   source = "../../modules/jamf"%s
 }
-`, versionLine, providerAttrs, moduleArgStr.String())
+`, prov.EnvProviderHeader(env, versionLine, tokenRefreshPeriod), moduleArgStr.String())
 
 	return os.WriteFile(filepath.Join(envDir, "main.tf"), []byte(content), 0644)
 }
@@ -153,49 +128,11 @@ func generateEnvBackendTF(envDir, envName string) error {
 
 // generateEnvVariablesTF writes the variables.tf for an environment with auth
 // variables and pass-through variables for module inputs.
-func generateEnvVariablesTF(envDir string, env EnvConfig, diffs []AttrDiff, fileVars []ModuleVar) error {
+func generateEnvVariablesTF(envDir string, prov Provider, env EnvConfig, diffs []AttrDiff, fileVars []ModuleVar) error {
 	var content strings.Builder
 
-	fmt.Fprintf(&content, "variable \"jamfpro_instance_url\" {\n")
-	fmt.Fprintf(&content, "  description = \"Jamf Pro instance URL\"\n")
-	fmt.Fprintf(&content, "  type        = string\n")
-	fmt.Fprintf(&content, "  default     = %q\n", env.URL)
-	fmt.Fprintf(&content, "}\n\n")
-
-	fmt.Fprintf(&content, "variable \"jamfpro_auth_method\" {\n")
-	fmt.Fprintf(&content, "  description = \"Authentication method for the Jamf Pro provider\"\n")
-	fmt.Fprintf(&content, "  type        = string\n")
-	fmt.Fprintf(&content, "  default     = %q\n", env.AuthMethod)
-	fmt.Fprintf(&content, "}\n\n")
-
-	if env.AuthMethod == "oauth2" {
-		content.WriteString(`variable "jamfpro_client_id" {
-  description = "Jamf Pro API client ID for OAuth2 authentication"
-  type        = string
-  sensitive   = true
-}
-
-variable "jamfpro_client_secret" {
-  description = "Jamf Pro API client secret for OAuth2 authentication"
-  type        = string
-  sensitive   = true
-}
-
-`)
-	} else {
-		content.WriteString(`variable "jamfpro_basic_auth_username" {
-  description = "Jamf Pro username for basic authentication"
-  type        = string
-}
-
-variable "jamfpro_basic_auth_password" {
-  description = "Jamf Pro password for basic authentication"
-  type        = string
-  sensitive   = true
-}
-
-`)
-	}
+	// Provider-specific connection variables (URL/auth/credentials).
+	content.WriteString(prov.EnvAuthVariables(env))
 
 	// Pass-through variables for diffs (declared here so user can set in tfvars,
 	// then passed to the module via main.tf)
@@ -215,7 +152,9 @@ variable "jamfpro_basic_auth_password" {
 		prevType = d.ResourceType
 	}
 
-	// Pass-through variables for file(var.X) patterns (token paths etc.)
+	// Pass-through variables for file(var.X) patterns (token paths etc.) and
+	// write-only secrets — declared here so the user can set them in tfvars, then
+	// passed to the module via main.tf.
 	for _, v := range fileVars {
 		if v.FilePath != "" {
 			continue // divergent file vars are handled by file() in main.tf, not passed through
@@ -223,6 +162,9 @@ variable "jamfpro_basic_auth_password" {
 		fmt.Fprintf(&content, "variable %q {\n", v.Name)
 		fmt.Fprintf(&content, "  description = %q\n", v.Description)
 		fmt.Fprintf(&content, "  type        = string\n")
+		if v.Sensitive {
+			fmt.Fprintf(&content, "  sensitive   = true\n")
+		}
 		fmt.Fprintf(&content, "}\n\n")
 	}
 
@@ -273,14 +215,20 @@ func generateEnvTfvars(envDir, envName string, diffs []AttrDiff) error {
 
 // generateEnvImports writes import blocks for all resources present in this
 // environment, with module.jamf. prefix on the to address.
-func generateEnvImports(envDir string, matches []MatchedResource, envName string) error {
+func generateEnvImports(envDir string, matches []MatchedResource, moduleAddrs map[string]bool, envName string) error {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
 	for _, m := range matches {
 		id, ok := m.IDs[envName]
-		if !ok {
-			continue // resource not in this env
+		if !ok || id == "" {
+			continue // resource not in this env, or no recoverable import ID
+		}
+		// Only import resources that actually exist in the module — post-processing
+		// may have skipped them (vendor-managed profiles, blueprint drafts) or
+		// stripped them (compliance-benchmark artifacts).
+		if moduleAddrs != nil && !moduleAddrs[m.ResourceType+"."+m.Label] {
+			continue
 		}
 
 		importBlock := body.AppendNewBlock("import", nil)

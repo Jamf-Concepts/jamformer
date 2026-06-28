@@ -151,6 +151,29 @@ func (ps *ProviderSchema) isSensitive(resourceType, blockPath, attrName string) 
 	return info.Sensitive
 }
 
+// isWriteOnly reports whether an attribute is WriteOnly (a user-supplied secret
+// the provider never returns on read). These are wired to variables by
+// injectRequiredWriteOnly during processing, so the validation auto-fix must
+// leave them alone rather than wire them a second time.
+func (ps *ProviderSchema) isWriteOnly(resourceType, blockPath, attrName string) bool {
+	if ps == nil {
+		return false
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return false
+	}
+	attrs, ok := paths[blockPath]
+	if !ok {
+		return false
+	}
+	info, ok := attrs[attrName]
+	if !ok {
+		return false
+	}
+	return info.WriteOnly
+}
+
 // requiredTopLevelAttrs returns the top-level (blockPath "") attribute info for a
 // resource type, keyed by attribute name. Used to inject placeholders for
 // Required attributes the server never returns on read.

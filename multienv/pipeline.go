@@ -7,12 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	tfjson "github.com/hashicorp/terraform-json"
-
 	"github.com/Jamf-Concepts/jamformer/importgen"
 	"github.com/Jamf-Concepts/jamformer/postprocess"
-	"github.com/Jamf-Concepts/jamformer/pro"
-	"github.com/Jamf-Concepts/jamformer/registry"
 	"github.com/Jamf-Concepts/jamformer/terraform"
 )
 
@@ -37,6 +33,11 @@ func RunPipeline(opts *Options) error {
 		}
 	}
 
+	prov, err := providerFor(opts.Provider)
+	if err != nil {
+		return err
+	}
+
 	sourceEnv := opts.SourceEnv
 	if sourceEnv == "" {
 		sourceEnv = opts.Envs[0].Name
@@ -56,7 +57,7 @@ func RunPipeline(opts *Options) error {
 	}()
 	for _, env := range opts.Envs {
 		logStep("Running pipeline for environment %q (%s)...", env.Name, env.URL)
-		result, err := runPerEnv(env, opts)
+		result, err := prov.DiscoverAndGenerate(env, opts)
 		if err != nil {
 			return fmt.Errorf("environment %q: %w", env.Name, err)
 		}
@@ -116,21 +117,12 @@ func RunPipeline(opts *Options) error {
 		}
 	}
 
-	// Load provider schema from source env
-	var schemas *tfjson.ProviderSchemas
-	if sourceIR, ok := envResults[sourceEnv]; ok {
-		s, _ := terraform.ProvidersSchema(sourceIR.OutputDir)
-		schemas = s
-	}
-
-	// Postprocess source env with support files prefixed to support_files/<sourceEnv>/
-	if err := postprocess.Process(opts.OutputDir, outputGenerated, sourceResult.Registry, &postprocess.ProcessOptions{
-		TypeToFileMap:      pro.TypeToFileMap(),
-		Rules:              pro.DefaultRules(),
-		SkipReferences:     opts.SkipReferences,
-		ProviderSchemas:    schemas,
-		SupportFilesPrefix: sourceEnv,
-	}); err != nil {
+	// Postprocess source env with support files prefixed to support_files/<sourceEnv>/.
+	// Clone the provider's base ProcessOptions and override the per-call fields.
+	sourceProcessOpts := *sourceResult.ProcessOptions
+	sourceProcessOpts.SkipReferences = opts.SkipReferences
+	sourceProcessOpts.SupportFilesPrefix = sourceEnv
+	if err := postprocess.Process(opts.OutputDir, outputGenerated, sourceResult.Registry, &sourceProcessOpts); err != nil {
 		return fmt.Errorf("post-processing: %w", err)
 	}
 	_ = os.Remove(outputGenerated)
@@ -149,7 +141,7 @@ func RunPipeline(opts *Options) error {
 			continue
 		}
 		logStep("  Extracting support files for %q...", env.Name)
-		if err := extractEnvSupportFiles(opts.OutputDir, env.Name, envGenerated, result.Registry); err != nil {
+		if err := extractEnvSupportFiles(opts.OutputDir, env.Name, envGenerated, result); err != nil {
 			logStep("  Warning: could not extract support files for %q: %v", env.Name, err)
 		}
 	}
@@ -182,15 +174,15 @@ func RunPipeline(opts *Options) error {
 
 	// Write required_providers in the module so Terraform knows the provider source
 	pinnedVersion := opts.ProviderVersion
-	resolvedVersion := terraform.ResolvedProviderVersion(sourceResult.OutputDir, terraform.ProviderSourceJamfPro)
-	if err := generateModuleProviders(moduleDir, pinnedVersion, resolvedVersion); err != nil {
+	resolvedVersion := terraform.ResolvedProviderVersion(sourceResult.OutputDir, prov.ProviderSource())
+	if err := generateModuleProviders(moduleDir, prov, pinnedVersion, resolvedVersion); err != nil {
 		return fmt.Errorf("generating module providers: %w", err)
 	}
 
 	// 6b. Split partial-env resources into labeled files
 	if partialCount > 0 {
 		logStep("  Separating %d environment-specific resources...", partialCount)
-		if err := splitPartialEnvResources(moduleDir, matches, pro.TypeToFileMap()); err != nil {
+		if err := splitPartialEnvResources(moduleDir, matches, prov.TypeToFileMap()); err != nil {
 			return fmt.Errorf("splitting partial-env resources: %w", err)
 		}
 	}
@@ -223,6 +215,22 @@ func RunPipeline(opts *Options) error {
 	// that aren't covered by the divergent file rewriting above.
 	fileVars = append(fileVars, scanFileVarRefs(moduleDir)...)
 
+	// Recover write-only secrets injected during post-processing (bare var.X
+	// refs not covered by diffs or file vars). The source-env post-processing
+	// declared these in a variables.tf that is discarded during module assembly,
+	// so they must be re-declared on the module and supplied per environment.
+	knownVars := make(map[string]bool)
+	for _, d := range diffs {
+		knownVars[d.VarName] = true
+	}
+	for _, v := range fileVars {
+		knownVars[v.Name] = true
+	}
+	if writeOnlyVars := scanWriteOnlyVarRefs(moduleDir, knownVars); len(writeOnlyVars) > 0 {
+		logStep("  %d write-only secret(s) wired to environment variables", len(writeOnlyVars))
+		fileVars = append(fileVars, writeOnlyVars...)
+	}
+
 	// 8. Generate module variables
 	logStep("Generating module variables...")
 	if err := generateModuleVariables(moduleDir, diffs, fileVars); err != nil {
@@ -232,14 +240,14 @@ func RunPipeline(opts *Options) error {
 	// 9. Generate per-environment root directories
 	logStep("Generating environment directories...")
 
-	// Get token refresh period from source env
-	tokenRefreshPeriod := 0
-	if sourceResult.ImportCreds != nil {
-		tokenRefreshPeriod = sourceResult.ImportCreds.TokenRefreshBufferPeriod
-	}
+	tokenRefreshPeriod := sourceResult.TokenRefreshPeriod
+
+	// Only import resources that exist in the assembled module (post-processing
+	// skips/strips some), so env-root import blocks never dangle.
+	moduleAddrs := moduleResourceAddrs(moduleDir)
 
 	for _, env := range opts.Envs {
-		if err := generateEnvRoot(opts.OutputDir, env, matches, diffs, divergentFiles, fileVars, pinnedVersion, resolvedVersion, tokenRefreshPeriod); err != nil {
+		if err := generateEnvRoot(opts.OutputDir, prov, env, matches, moduleAddrs, diffs, divergentFiles, fileVars, pinnedVersion, resolvedVersion, tokenRefreshPeriod); err != nil {
 			return fmt.Errorf("generating env root for %s: %w", env.Name, err)
 		}
 	}
@@ -290,51 +298,11 @@ func cleanupOutputRoot(outputDir string) {
 	_ = os.RemoveAll(filepath.Join(outputDir, "support_files"))
 }
 
-// runPerEnv executes the Jamf Pro pipeline for a single environment into a
-// temp directory, returning the intermediate results.
-func runPerEnv(env EnvConfig, opts *Options) (*PerEnvResult, error) {
-	tempDir, err := os.MkdirTemp("", "jamformer-"+env.Name+"-*")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
-	}
-
-	pipelineOpts := &pro.PipelineOptions{
-		OutputDir:            tempDir,
-		URL:                  env.URL,
-		AuthMethod:           env.AuthMethod,
-		Username:             env.Username,
-		Password:             env.Password,
-		ClientID:             env.ClientID,
-		ClientSecret:         env.ClientSecret,
-		SelectedResources:    opts.SelectedResources,
-		SkipReferences:       false, // we need references resolved for diffing
-		SkipPackageDownloads: opts.SkipPackageDownloads,
-		ProviderVersion:      opts.ProviderVersion,
-		Quiet:                opts.Quiet,
-		Verbose:              opts.Verbose,
-		ResourcesFlag:        opts.ResourcesFlag,
-		ExcludeFlag:          opts.ExcludeFlag,
-		StatusFunc:           opts.StatusFunc,
-	}
-
-	ir, err := pro.RunDiscoveryAndGenerate(pipelineOpts)
-	if err != nil {
-		_ = os.RemoveAll(tempDir)
-		return nil, err
-	}
-
-	return &PerEnvResult{
-		EnvName:     env.Name,
-		Registry:    ir.Registry,
-		Resources:   ir.Resources,
-		OutputDir:   tempDir,
-		ImportCreds: ir.ImportCreds,
-	}, nil
-}
-
 // extractEnvSupportFiles runs postprocessing for a non-source environment into
-// a throwaway directory, then moves the extracted support files to the real output.
-func extractEnvSupportFiles(outputDir, envName, generatedFile string, reg *registry.Registry) error {
+// a throwaway directory, then moves the extracted support files to the real
+// output. It reuses the environment's provider-specific ProcessOptions so the
+// same extraction rules (scripts, profiles, app-configs, etc.) apply.
+func extractEnvSupportFiles(outputDir, envName, generatedFile string, result *PerEnvResult) error {
 	extractDir, err := os.MkdirTemp("", "jamformer-extract-"+envName+"-*")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -351,13 +319,11 @@ func extractEnvSupportFiles(outputDir, envName, generatedFile string, reg *regis
 		return fmt.Errorf("writing generated.tf: %w", err)
 	}
 
-	// Run postprocess with extraction only (skip references, use env prefix)
-	if err := postprocess.Process(extractDir, extractGenFile, reg, &postprocess.ProcessOptions{
-		TypeToFileMap:      pro.TypeToFileMap(),
-		Rules:              pro.DefaultRules(),
-		SkipReferences:     true,
-		SupportFilesPrefix: envName,
-	}); err != nil {
+	// Run postprocess with extraction only (skip references, use env prefix).
+	extractOpts := *result.ProcessOptions
+	extractOpts.SkipReferences = true
+	extractOpts.SupportFilesPrefix = envName
+	if err := postprocess.Process(extractDir, extractGenFile, result.Registry, &extractOpts); err != nil {
 		return fmt.Errorf("extracting support files: %w", err)
 	}
 

@@ -253,13 +253,19 @@ rm *_import.tf     # Remove import blocks (no longer needed)
 
 > **⚠️ Experimental and highly advanced.** This feature is intended for people who are already comfortable with Terraform modules, long-lived branch workflows, and the Jamf provider's resource model. It produces output that is *more* of a scaffold than the single-environment mode, not less — expect to edit the generated module, the per-env roots, and the variables extraction before any of it is usable. Treat it as a research/enablement feature, not a supported production workflow.
 
-For teams managing multiple Jamf Pro environments (dev, staging, prod), jamformer can generate a Terraform project structured for a long-lived branch workflow. The output uses a shared module with per-environment root directories, designed for git branching strategies where each branch represents an environment (e.g. staging -> main promotion).
+For teams managing multiple Jamf environments (dev, staging, prod), jamformer can generate a Terraform project structured for a long-lived branch workflow. The output uses a shared module with per-environment root directories, designed for git branching strategies where each branch represents an environment (e.g. staging -> main promotion).
+
+Multi-env mode supports the **jamfplatform** (default) and **jamfpro** providers. Select with `-provider`; with no `-provider` it follows the global default (jamfplatform). Jamf Protect and JSC are not supported in multi-env mode.
+
+A single environment is also accepted (`-multi-env prod`) — this produces the same module + `environments/<env>/` scaffold for just one instance, useful for adopting the modular structure before adding more environments.
 
 **Prerequisites:** Your environments should have matching resource names where possible. Resources are matched across environments by name - duplicate names within a resource type may cause incorrect matching. This feature is designed for environments that are intentionally kept in sync.
 
 ### Setup
 
-Set per-environment credentials using environment variables with an environment name suffix:
+Set per-environment credentials using environment variables with an environment name suffix.
+
+**Jamf Pro** (basic auth or OAuth2; bare instance names expand to `<name>.jamfcloud.com`):
 
 ```bash
 export JAMF_URL_STAGING=https://staging.jamfcloud.com
@@ -270,7 +276,18 @@ export JAMF_URL_PROD=https://prod.jamfcloud.com
 export JAMF_CLIENT_ID_PROD=xxx
 export JAMF_CLIENT_SECRET_PROD=xxx
 
-./jamformer -multi-env "staging prod"
+./jamformer -provider jamfpro -multi-env "staging prod"
+```
+
+**Jamf Platform** (OAuth2 only; regional API gateway base URL; tenant ID optional, enabling packages / Jamf Connect / Self Service branding downloads):
+
+```bash
+export JAMF_URL_PROD=https://eu.apigw.jamf.com
+export JAMF_CLIENT_ID_PROD=xxx
+export JAMF_CLIENT_SECRET_PROD=xxx
+export JAMF_TENANT_ID_PROD=xxx          # optional
+
+./jamformer -multi-env "staging prod"   # jamfplatform is the default provider
 ```
 
 The first environment listed is the source of truth for resource definitions. Use `-source-env` to override this.
@@ -452,6 +469,8 @@ Protect and Platform use `terraform query`, which requires Terraform 1.14 or lat
 - **PPD and provisioning-profile extraction (Jamf Platform)** - `jamfplatform_pro_printer.ppd_contents` (PPD driver descriptor) and `jamfplatform_pro_mobile_device_provisioning_profile.profile_data` (signed `.mobileprovision`) are extracted to `support_files/printers/` and `support_files/mobile_device_provisioning_profiles/` respectively and referenced via `file()`, alongside scripts, configuration profiles, and app configurations.
 - **Package downloads** - For Jamf Pro, packages are downloaded from the Cloud Distribution Point by default. For Jamf Platform, packages resident in the Jamf Cloud Distribution Service (JCDS) are downloaded by default when `JAMF_TENANT_ID` is set (JCDS is tenant-scoped); catalog packages whose bytes live elsewhere are kept as metadata + server-supplied hashes. Use `-skip-package-downloads` to skip in both cases.
 - **Blueprint drafts (Jamf Platform)** - A blueprint with no device groups is a non-creatable UI draft (`POST /blueprints` rejects an empty scope). jamformer skips these on export with a warning, since they would otherwise fail `terraform validate`.
+- **API role privilege validation (Jamf Platform)** - The provider validates each `jamfplatform_pro_api_role` privilege against the instance's current assignable-privilege catalog (sourced live from the instance) and rejects unknown values; a role can still hold privileges that have since been removed/renamed in the instance (e.g. for features no longer enabled), which Jamf Pro would also reject on apply. jamformer fetches the same catalog via the federated `pro` SDK (requires `JAMF_TENANT_ID`) and drops privileges not in it from the generated `api_role` resources, warning per role with the exact privileges removed.
+- **Compliance-benchmark artifact stripping (Jamf Platform)** - A compliance benchmark (`jamfplatform_cbengine_benchmark`) generates and continuously reconciles a fleet of supporting resources — policies, configuration profiles, computer extension attributes, smart device groups, scripts, and a category. jamformer keeps the benchmark resource and strips its derived artifacts (which would otherwise double-manage state the benchmark owns and drift on every benchmark update). An artifact is identified by a category whose name matches a benchmark title (and any policy/profile/script assigned to that category), or by a computer EA / device group / policy / profile whose name begins with `<benchmark title> - ` (e.g. `CIS v8 - Failed Result List`).
 - **Terraform 1.14+** - Jamf Protect and Platform require Terraform 1.14+ for `terraform query` support.
 - **OAuth2 short-lived tokens** - API integrations with very short token lifetimes (under 60 seconds) are supported via automatic token lifetime probing. The generated `provider.tf` includes `token_refresh_buffer_period_seconds` when needed. If you change API integrations after generation, you may need to update this value.
 - **JSC auth** - JSC requires a local account or Jamf ID. SSO/SAML authentication is not supported.

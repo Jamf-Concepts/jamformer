@@ -607,8 +607,8 @@ func main() {
 		for name := range strings.FieldsSeq(raw) {
 			multiEnvNames = append(multiEnvNames, strings.ToLower(strings.TrimSpace(name)))
 		}
-		if len(multiEnvNames) < 2 {
-			log.Fatal("-multi-env requires at least 2 environment names")
+		if len(multiEnvNames) < 1 {
+			log.Fatal("-multi-env requires at least one environment name")
 		}
 		// Check for duplicates
 		seen := make(map[string]bool)
@@ -618,11 +618,17 @@ func main() {
 			}
 			seen[name] = true
 		}
-		// Multi-env only supports jamfpro currently
-		if *providerFlag != "" && *providerFlag != "jamfpro" {
-			log.Fatal("-multi-env currently only supports the jamfpro provider")
+		// Multi-env supports the jamfplatform and jamfpro providers (those with a
+		// discovery/generate split). Protect and JSC are not supported. An unset
+		// provider follows the global default (jamfplatform).
+		switch *providerFlag {
+		case "":
+			*providerFlag = "jamfplatform"
+		case "jamfplatform", "jamfpro":
+			// supported
+		default:
+			log.Fatalf("-multi-env supports only the jamfplatform and jamfpro providers (got %q)", *providerFlag)
 		}
-		*providerFlag = "jamfpro" // force jamfpro
 		if *compactMode {
 			log.Fatal("-multi-env and -compact cannot be used together")
 		}
@@ -833,7 +839,7 @@ func main() {
 	default:
 		log.Fatal("No authentication credentials provided")
 	}
-	if isPlatform && *tenantID == "" {
+	if !isMultiEnv && isPlatform && *tenantID == "" {
 		log.Fatal("Jamf Platform requires a tenant ID (JAMF_TENANT_ID)")
 	}
 
@@ -1024,11 +1030,12 @@ func main() {
 	var fixResult *postprocess.FixResult
 	if isMultiEnv {
 		// Multi-env mode: resolve per-env credentials and run the merge pipeline
-		envConfigs, err := resolveMultiEnvCredentials(multiEnvNames, interactive)
+		envConfigs, err := resolveMultiEnvCredentials(*providerFlag, multiEnvNames, interactive)
 		if err != nil {
 			log.Fatalf("Multi-env credential resolution failed: %v", err)
 		}
 		multienvOpts := &multienv.Options{
+			Provider:             *providerFlag,
 			Envs:                 envConfigs,
 			SourceEnv:            *sourceEnvFlag,
 			OutputDir:            absOutput,
@@ -1501,8 +1508,71 @@ func parseResourceFilter(input string, nameMap map[string]string) map[string]boo
 
 // resolveMultiEnvCredentials builds EnvConfig for each environment from
 // env-name-suffixed environment variables (e.g. JAMF_URL_DEV, JAMF_CLIENT_ID_DEV).
-// If interactive and credentials are missing, prompts for each env.
-func resolveMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+// If interactive and credentials are missing, prompts for each env. The shape of
+// the credentials depends on the provider.
+func resolveMultiEnvCredentials(provider string, envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+	if provider == "jamfplatform" {
+		return resolvePlatformMultiEnvCredentials(envNames, interactive)
+	}
+	return resolveProMultiEnvCredentials(envNames, interactive)
+}
+
+// resolvePlatformMultiEnvCredentials resolves per-env Jamf Platform credentials.
+// Jamf Platform is OAuth2 only and uses a regional API gateway base URL (no
+// .jamfcloud shorthand). The tenant ID is optional (enables packages, Jamf
+// Connect, and Self Service branding-image downloads).
+func resolvePlatformMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+	var configs []multienv.EnvConfig
+	for _, name := range envNames {
+		upper := strings.ToUpper(name)
+		env := multienv.EnvConfig{
+			Name:         name,
+			AuthMethod:   "oauth2",
+			URL:          os.Getenv("JAMF_URL_" + upper),
+			ClientID:     os.Getenv("JAMF_CLIENT_ID_" + upper),
+			ClientSecret: os.Getenv("JAMF_CLIENT_SECRET_" + upper),
+			TenantID:     os.Getenv("JAMF_TENANT_ID_" + upper),
+		}
+
+		if (env.URL == "" || env.ClientID == "" || env.ClientSecret == "") && interactive {
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Printf("\n%sEnvironment: %s%s\n", uBold, name, uReset)
+			if env.URL == "" {
+				env.URL = promptLine(reader, fmt.Sprintf("  Jamf Platform base URL %s(e.g. https://us.apigw.jamf.com)%s: ", uDim, uReset))
+			}
+			if env.ClientID == "" {
+				env.ClientID = promptLine(reader, "  API Client ID: ")
+			}
+			if env.ClientSecret == "" {
+				env.ClientSecret = promptPassword("  API Client Secret: ")
+			}
+			if env.TenantID == "" {
+				env.TenantID = promptLine(reader, fmt.Sprintf("  Tenant ID %s(optional, enables packages/Jamf Connect/branding)%s: ", uDim, uReset))
+			}
+		}
+
+		// Normalize URL — Platform uses regional gateway URLs directly (no
+		// .jamfcloud shorthand expansion).
+		env.URL = strings.TrimRight(env.URL, "/")
+		if env.URL != "" && !strings.HasPrefix(env.URL, "https://") && !strings.HasPrefix(env.URL, "http://") {
+			env.URL = "https://" + env.URL
+		}
+
+		if env.URL == "" {
+			return nil, fmt.Errorf("missing base URL for environment %q (set JAMF_URL_%s)", name, upper)
+		}
+		if env.ClientID == "" || env.ClientSecret == "" {
+			return nil, fmt.Errorf("missing OAuth2 credentials for environment %q (set JAMF_CLIENT_ID_%s and JAMF_CLIENT_SECRET_%s)", name, upper, upper)
+		}
+
+		configs = append(configs, env)
+	}
+	return configs, nil
+}
+
+// resolveProMultiEnvCredentials resolves per-env Jamf Pro credentials (basic or
+// OAuth2), expanding bare instance names to <name>.jamfcloud.com.
+func resolveProMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
 	var configs []multienv.EnvConfig
 	for _, name := range envNames {
 		upper := strings.ToUpper(name)

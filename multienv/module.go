@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -492,18 +493,111 @@ func scanFileVarRefs(moduleDir string) []ModuleVar {
 	return result
 }
 
-// generateModuleProviders writes a required_providers block in modules/jamf/providers.tf
-// so Terraform knows which provider supplies the jamfpro_* resources.
-func generateModuleProviders(moduleDir, pinnedVersion, resolvedVersion string) error {
-	versionLine := terraform.FormatVersionConstraint(pinnedVersion, resolvedVersion)
-	content := fmt.Sprintf(`terraform {
-  required_providers {
-    jamfpro = {
-      source = "deploymenttheory/jamfpro"%s
-    }
-  }
+// moduleResourceAddrs returns the set of "type.label" addresses for every
+// resource block actually present in the assembled module. Post-processing
+// skips some resources (vendor-managed/signed profiles, non-creatable blueprint
+// drafts), and benchmark artifacts are stripped earlier — so a matched resource
+// may have no config in the module. Import blocks must only target resources
+// that exist, or `terraform plan` errors with "import target does not exist".
+func moduleResourceAddrs(moduleDir string) map[string]bool {
+	addrs := make(map[string]bool)
+	files, _ := filepath.Glob(filepath.Join(moduleDir, "*.tf"))
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		f, diags := hclwrite.ParseConfig(data, file, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			continue
+		}
+		for _, block := range f.Body().Blocks() {
+			if block.Type() == "resource" && len(block.Labels()) >= 2 {
+				addrs[block.Labels()[0]+"."+block.Labels()[1]] = true
+			}
+		}
+	}
+	return addrs
 }
-`, versionLine)
+
+// varRefRe matches a variable reference anywhere in an expression, e.g.
+// `var.smtp_password`. Used to find write-only/required-null secrets wired to
+// var.<name> — including ones nested inside object-expression attributes such as
+// `institutional_recovery_key = { data = var.x }`, which the pro_* types use.
+var varRefRe = regexp.MustCompile(`\bvar\.([a-zA-Z0-9_]+)`)
+
+// scanWriteOnlyVarRefs finds bare `var.X` references in the module that are not
+// already accounted for by diffs or file variables. These are the write-only
+// secrets jamformer injects during post-processing (the provider never returns
+// them); the source-env post-processing declared them in a variables.tf that is
+// discarded when the module is assembled, so they must be re-declared on the
+// module and supplied per environment. They are returned as sensitive ModuleVars.
+func scanWriteOnlyVarRefs(moduleDir string, known map[string]bool) []ModuleVar {
+	var result []ModuleVar
+	seen := make(map[string]bool)
+
+	files, _ := filepath.Glob(filepath.Join(moduleDir, "*.tf"))
+	for _, file := range files {
+		if filepath.Base(file) == "variables.tf" {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		f, diags := hclwrite.ParseConfig(data, file, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			continue
+		}
+		for _, block := range f.Body().Blocks() {
+			if block.Type() != "resource" {
+				continue
+			}
+			labels := block.Labels()
+			if len(labels) < 2 {
+				continue
+			}
+			collectBareVarRefs(block.Body(), labels[0], labels[1], known, seen, &result)
+		}
+	}
+	return result
+}
+
+// collectBareVarRefs walks a body (recursing into nested blocks) for var.<name>
+// references in any attribute expression — including object-expression
+// attributes (`x = { secret = var.y }`) — recording unknown ones as sensitive
+// vars. Names already accounted for by diffs or file variables (passed in via
+// known) are skipped.
+func collectBareVarRefs(body *hclwrite.Body, resourceType, label string, known, seen map[string]bool, out *[]ModuleVar) {
+	for attrName, attr := range body.Attributes() {
+		exprBytes := attr.Expr().BuildTokens(nil).Bytes()
+		for _, m := range varRefRe.FindAllSubmatch(exprBytes, -1) {
+			varName := string(m[1])
+			if known[varName] || seen[varName] {
+				continue
+			}
+			seen[varName] = true
+			*out = append(*out, ModuleVar{
+				Name:         varName,
+				Description:  fmt.Sprintf("Write-only secret for %s.%s %s (Jamf never returns this value)", resourceType, label, attrName),
+				ResourceType: resourceType,
+				Label:        label,
+				AttrName:     attrName,
+				Sensitive:    true,
+			})
+		}
+	}
+	for _, block := range body.Blocks() {
+		collectBareVarRefs(block.Body(), resourceType, label, known, seen, out)
+	}
+}
+
+// generateModuleProviders writes a required_providers block in
+// modules/jamf/providers.tf so Terraform knows which provider supplies the
+// resources. The block itself is provider-specific.
+func generateModuleProviders(moduleDir string, prov Provider, pinnedVersion, resolvedVersion string) error {
+	versionLine := terraform.FormatVersionConstraint(pinnedVersion, resolvedVersion)
+	content := prov.ModuleProvidersBlock(versionLine)
 	return os.WriteFile(filepath.Join(moduleDir, "providers.tf"), []byte(content), 0644)
 }
 
@@ -532,6 +626,9 @@ func generateModuleVariables(moduleDir string, diffs []AttrDiff, fileVars []Modu
 		fmt.Fprintf(&b, "variable %q {\n", v.Name)
 		fmt.Fprintf(&b, "  description = %q\n", v.Description)
 		fmt.Fprintf(&b, "  type        = string\n")
+		if v.Sensitive {
+			fmt.Fprintf(&b, "  sensitive   = true\n")
+		}
 		fmt.Fprintf(&b, "}\n")
 		entries = append(entries, varEntry{name: v.Name, resourceType: v.ResourceType, block: b.String()})
 	}

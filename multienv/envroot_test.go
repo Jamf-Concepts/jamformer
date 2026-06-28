@@ -20,7 +20,7 @@ func TestGenerateEnvMainTF_OAuth2(t *testing.T) {
 		{VarName: "policy_chrome_priority", ResourceType: "jamfpro_policy", Label: "chrome", AttrName: "priority", VarType: "string"},
 	}
 
-	if err := generateEnvMainTF(envDir, env, diffs, nil, "", "1.0.0", 300); err != nil {
+	if err := generateEnvMainTF(envDir, proProvider{}, env, diffs, nil, "", "1.0.0", 300); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +67,7 @@ func TestGenerateEnvMainTF_SortedAndGrouped(t *testing.T) {
 		{VarName: "category_apps_priority", ResourceType: "jamfpro_category", VarType: "string"},
 	}
 
-	if err := generateEnvMainTF(envDir, env, diffs, nil, "", "", 0); err != nil {
+	if err := generateEnvMainTF(envDir, proProvider{}, env, diffs, nil, "", "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestGenerateEnvMainTF_BasicAuth(t *testing.T) {
 		AuthMethod: "basic",
 	}
 
-	if err := generateEnvMainTF(envDir, env, nil, nil, "", "", 0); err != nil {
+	if err := generateEnvMainTF(envDir, proProvider{}, env, nil, nil, "", "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +163,7 @@ func TestGenerateEnvVariablesTF_OAuth2(t *testing.T) {
 		{VarName: "policy_chrome_priority", ResourceType: "jamfpro_policy", Label: "chrome", AttrName: "priority", VarType: "string"},
 	}
 
-	if err := generateEnvVariablesTF(envDir, env, diffs, nil); err != nil {
+	if err := generateEnvVariablesTF(envDir, proProvider{}, env, diffs, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -198,7 +198,7 @@ func TestGenerateEnvVariablesTF_BasicAuth(t *testing.T) {
 		AuthMethod: "basic",
 	}
 
-	if err := generateEnvVariablesTF(envDir, env, nil, nil); err != nil {
+	if err := generateEnvVariablesTF(envDir, proProvider{}, env, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -314,7 +314,7 @@ func TestGenerateEnvImports(t *testing.T) {
 		},
 	}
 
-	if err := generateEnvImports(envDir, matches, "prod"); err != nil {
+	if err := generateEnvImports(envDir, matches, nil, "prod"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -354,7 +354,7 @@ func TestGenerateEnvImports_NoResources(t *testing.T) {
 	}
 
 	// "prod" has no resources
-	if err := generateEnvImports(envDir, matches, "prod"); err != nil {
+	if err := generateEnvImports(envDir, matches, nil, "prod"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -419,7 +419,7 @@ func TestGenerateEnvRoot_Integration(t *testing.T) {
 		},
 	}
 
-	if err := generateEnvRoot(outputDir, env, matches, nil, nil, nil, "", "1.0.0", 300); err != nil {
+	if err := generateEnvRoot(outputDir, proProvider{}, env, matches, nil, nil, nil, nil, "", "1.0.0", 300); err != nil {
 		t.Fatal(err)
 	}
 

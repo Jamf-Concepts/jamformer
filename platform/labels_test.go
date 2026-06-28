@@ -395,3 +395,56 @@ func TestNameAttrForType(t *testing.T) {
 		})
 	}
 }
+
+func TestRenameLabels_TypeSpecificNameAttrs(t *testing.T) {
+	dir := t.TempDir()
+	generatedFile := filepath.Join(dir, "generated.tf")
+
+	src := `resource "jamfplatform_pro_api_role" "all_0" {
+  display_name = "portalsync"
+}
+
+resource "jamfplatform_pro_account" "all_1" {
+  username = "ben.toms@jamf.com"
+}
+
+resource "jamfplatform_pro_allowed_file_extension" "all_2" {
+  extension = "xlt"
+}
+
+resource "jamfplatform_pro_app_request_form_field" "all_3" {
+  title = "My Field"
+}
+
+resource "jamfplatform_pro_removable_mac_address" "all_4" {
+  mac_address = "00:A0:C9:14:C8:20"
+}
+
+resource "jamfplatform_pro_ldap_server" "all_5" {
+  connection_settings = {
+    display_name = "ldap.datajar.mobi"
+  }
+}
+`
+	if err := os.WriteFile(generatedFile, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameLabels(generatedFile); err != nil {
+		t.Fatalf("RenameLabels: %v", err)
+	}
+	result, _ := os.ReadFile(generatedFile)
+	body := string(result)
+
+	for _, want := range []string{
+		`"jamfplatform_pro_api_role" "portalsync"`,
+		`"jamfplatform_pro_account" "ben_toms_jamf_com"`,
+		`"jamfplatform_pro_allowed_file_extension" "xlt"`,
+		`"jamfplatform_pro_app_request_form_field" "my_field"`,
+		`"jamfplatform_pro_removable_mac_address" "_00_a0_c9_14_c8_20"`,
+		`"jamfplatform_pro_ldap_server" "ldap_datajar_mobi"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in:\n%s", want, body)
+		}
+	}
+}

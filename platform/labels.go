@@ -7,14 +7,31 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-// nameAttrForType returns the attribute name used to derive a friendly label
-// for the given resource type.
+// nameAttrForType returns the top-level attribute name used to derive a friendly
+// label for the given resource type. Many federated pro types name themselves
+// with something other than "name" (display_name, title, username, …); those
+// that nest their name (policy/profile general.name, ldap_server
+// connection_settings.display_name) are handled in platformLabelName.
 func nameAttrForType(resourceType string) string {
 	switch resourceType {
-	case "jamfplatform_cbengine_benchmark":
+	case "jamfplatform_cbengine_benchmark",
+		"jamfplatform_pro_app_request_form_field":
 		return "title"
-	case "jamfplatform_pro_package":
+	case "jamfplatform_pro_package",
+		"jamfplatform_pro_api_role",
+		"jamfplatform_pro_api_client",
+		"jamfplatform_pro_account_group",
+		"jamfplatform_pro_supervision_identity",
+		"jamfplatform_pro_enrollment_customization",
+		"jamfplatform_pro_computer_prestage_enrollment",
+		"jamfplatform_pro_mobile_device_prestage_enrollment":
 		return "display_name"
+	case "jamfplatform_pro_account":
+		return "username"
+	case "jamfplatform_pro_allowed_file_extension":
+		return "extension"
+	case "jamfplatform_pro_removable_mac_address":
+		return "mac_address"
 	default:
 		return "name"
 	}
@@ -33,6 +50,10 @@ func platformLabelName(resourceType string, body *hclwrite.Body, _ func() string
 	var name string
 	if attrName == "name" {
 		name = postprocess.ReadObjectAttrString(body, []string{"general"}, "name")
+	}
+	// ldap_server nests its display name under connection_settings.
+	if name == "" && resourceType == "jamfplatform_pro_ldap_server" {
+		name = postprocess.ReadObjectAttrString(body, []string{"connection_settings"}, "display_name")
 	}
 	if name == "" {
 		if attr := body.GetAttribute(attrName); attr != nil {

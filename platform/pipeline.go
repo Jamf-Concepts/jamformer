@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	tfjson "github.com/hashicorp/terraform-json"
+
 	"github.com/Jamf-Concepts/jamformer/importgen"
 	"github.com/Jamf-Concepts/jamformer/platform/client"
 	"github.com/Jamf-Concepts/jamformer/platform/download"
@@ -32,10 +34,103 @@ type PipelineOptions struct {
 	StatusFunc           func(string, int, int) // optional callback: (message, current, total)
 }
 
+// IntermediateResult holds the output of RunDiscoveryAndGenerate — everything
+// needed to either run the standard single-env postprocessing or feed into the
+// multi-env merge pipeline. Mirrors pro.IntermediateResult.
+type IntermediateResult struct {
+	Registry        *registry.Registry
+	GeneratedFile   string               // path to generated.tf (import + resource blocks still present)
+	OutputDir       string               // working directory
+	PackageFiles    map[string]string    // JCDS file_name → relative path
+	Resources       []DiscoveredResource // flat (type, label, name, id) list for multi-env matching
+	ImportFiles     []string             // extra import files (singletons, jamf_connect) left in place
+	PlatformCreds   *importgen.PlatformCredentials
+	ProviderSchemas any // *tfjson.ProviderSchemas (kept as interface to avoid import in callers)
+}
+
 // RunPipeline executes the full Jamf Platform export pipeline:
-// generate provider config → query file → terraform init → terraform query → post-process.
-// Returns the validation fix result (may be nil) and any fatal error.
+// generate provider config → query file → terraform init → terraform query →
+// post-process. Returns the validation fix result (may be nil) and any fatal
+// error.
 func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
+	// Steps 1–6: discovery and config generation
+	ir, err := RunDiscoveryAndGenerate(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	logStep := func(format string, args ...any) {
+		if !opts.Quiet {
+			fmt.Printf(format+"\n", args...)
+		}
+	}
+	status := func(msg string, current, total int) {
+		if opts.StatusFunc != nil {
+			opts.StatusFunc(msg, current, total)
+		}
+	}
+
+	// 7. Post-process: strip nulls, rewrite references (object-attribute aware),
+	// extract scripts/profiles/app-configs to support files, split per-type.
+	status("post-processing", 0, 0)
+	logStep("Post-processing generated configuration...")
+	schemas, _ := ir.ProviderSchemas.(*tfjson.ProviderSchemas)
+	if err := postprocess.Process(opts.OutputDir, ir.GeneratedFile, ir.Registry, &postprocess.ProcessOptions{
+		TypeToFileMap:           TypeToFileMap(),
+		Rules:                   DefaultRules(),
+		ExtractSpecs:            ExtractSpecs(),
+		SkipReferences:          opts.SkipReferences,
+		SplitByCategory:         opts.SplitByCategory,
+		ProviderSchemas:         schemas,
+		InjectRequiredWriteOnly: true,
+		PlatformPackageFiles:    ir.PackageFiles,
+	}); err != nil {
+		return nil, fmt.Errorf("post-processing: %w", err)
+	}
+
+	// 8. Clean up intermediate files.
+	// Must happen before validation so terraform validate doesn't see duplicate
+	// resource definitions in both generated.tf and the per-type split files.
+	CleanupIntermediateFiles(opts.OutputDir)
+
+	// 8b. Validate and auto-fix conditionally invalid attributes
+	var providerSchema *postprocess.ProviderSchema
+	if schemas != nil {
+		providerSchema = postprocess.LoadProviderSchema(schemas)
+	}
+	fixResult, err := postprocess.FixValidationErrors(opts.OutputDir, providerSchema)
+	if err != nil {
+		if !postprocess.Quiet {
+			fmt.Printf("  Warning: validation fix failed: %v\n", err)
+		}
+	} else {
+		if fixResult.Fixed > 0 {
+			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
+		}
+		for _, v := range fixResult.RequiredVars {
+			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
+		}
+	}
+
+	return fixResult, nil
+}
+
+// CleanupIntermediateFiles removes the working files produced during discovery
+// and generation once post-processing has split them into per-type files.
+func CleanupIntermediateFiles(outputDir string) {
+	for _, name := range []string{"generated.tf", "query.tfquery.hcl", "singletons_import.tf", "jamf_connect_import.tf"} {
+		_ = os.Remove(filepath.Join(outputDir, name))
+	}
+}
+
+// RunDiscoveryAndGenerate executes steps 1–6 of the Jamf Platform pipeline
+// (generate config → init → query → jamf_connect/singleton/icon/branding
+// synthesis → package download → schema load) and returns the intermediate
+// results without post-processing. The generated.tf and import files are left
+// in place so callers can both post-process and enumerate the discovered
+// resources. Used by both the single-env RunPipeline and the multi-env merge
+// pipeline.
+func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error) {
 	// Set quiet/verbose flags for sub-packages
 	Quiet = opts.Quiet
 	importgen.Quiet = opts.Quiet
@@ -213,6 +308,30 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	}
 	_ = os.Remove(eventsFile)
 
+	// 6a1. Strip compliance-benchmark-derived resources (policies, profiles,
+	// computer EAs, device groups, scripts, categories). The benchmark engine
+	// owns and reconciles these; importing them standalone would double-manage
+	// and drift. Runs before icon/criteria synthesis so stripped resources are
+	// not processed downstream.
+	if stripped, err := StripComplianceBenchmarkArtifacts(generatedFile, reg); err != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not strip compliance-benchmark artifacts: %v\n", err)
+		}
+	} else if stripped > 0 {
+		logStep("  Stripped %d compliance-benchmark-derived resource(s)", stripped)
+	}
+
+	// 6a2. Correct attribute combinations the provider rejects in its plan-time
+	// ValidateConfig (which `terraform validate` doesn't surface), so the export
+	// plans cleanly.
+	if corrected, err := FixConditionalAttributes(generatedFile); err != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not apply conditional attribute fixes: %v\n", err)
+		}
+	} else if corrected > 0 {
+		logStep("  Corrected %d conditionally-invalid attribute(s)", corrected)
+	}
+
 	if !opts.Quiet {
 		counts, _ := CountResources(generatedFile)
 		for resourceType, count := range counts {
@@ -263,6 +382,21 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
+	// 6e. Drop api_role privileges not in the instance's assignable-privilege
+	// catalog (the provider validates against this same list and rejects unknown
+	// values). Tenant-scoped pro endpoint, so it requires a tenant ID.
+	apiRoleSelected := opts.SelectedResources == nil || opts.SelectedResources["api_role"]
+	if apiRoleSelected && opts.TenantID != "" {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+		if n, prErr := FilterApiRolePrivileges(terraform.Ctx, pc, generatedFile); prErr != nil {
+			if !opts.Quiet {
+				fmt.Printf("  Warning: could not validate api_role privileges: %v\n", prErr)
+			}
+		} else if n > 0 {
+			logStep("  Dropped %d api_role privilege(s) not valid on this instance", n)
+		}
+	}
+
 	// 6b. Download package files resident in the Jamf Cloud Distribution Service.
 	// Only JCDS-resident files are fetchable (and only when a tenant ID is set —
 	// the pro endpoints are tenant-scoped); the rest stay as metadata + server
@@ -294,53 +428,35 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		logStep("Skipping package downloads (use without -skip-package-downloads to download)")
 	}
 
-	// 7. Post-process: strip nulls, rewrite references (object-attribute aware),
-	// extract scripts/profiles/app-configs to support files, split per-type.
-	status("post-processing", 0, 0)
-	logStep("Post-processing generated configuration...")
+	// Load the provider schema (used by post-processing for null stripping and by
+	// the multi-env merge pipeline). Requires a finalized provider.tf and a
+	// completed init, both done above.
 	schemas, err := terraform.ProvidersSchema(opts.OutputDir)
 	if err != nil && !postprocess.Quiet {
 		fmt.Printf("  Warning: could not load provider schema, skipping null attribute removal: %v\n", err)
 	}
-	if err := postprocess.Process(opts.OutputDir, generatedFile, reg, &postprocess.ProcessOptions{
-		TypeToFileMap:           TypeToFileMap(),
-		Rules:                   DefaultRules(),
-		ExtractSpecs:            ExtractSpecs(),
-		SkipReferences:          opts.SkipReferences,
-		SplitByCategory:         opts.SplitByCategory,
-		ProviderSchemas:         schemas,
-		InjectRequiredWriteOnly: true,
-		PlatformPackageFiles:    packageFiles,
-	}); err != nil {
-		return nil, fmt.Errorf("post-processing: %w", err)
+
+	// Enumerate the discovered resources (type, label, name, id) for multi-env
+	// matching. Joins resource blocks in generated.tf with their import blocks
+	// (list imports live in generated.tf; singleton/jamf_connect imports live in
+	// their own files, still present at this point).
+	importFiles := []string{
+		filepath.Join(opts.OutputDir, "singletons_import.tf"),
+		filepath.Join(opts.OutputDir, "jamf_connect_import.tf"),
+	}
+	discovered, err := CollectResourceRefs(generatedFile, importFiles...)
+	if err != nil && !opts.Quiet {
+		fmt.Printf("  Warning: could not enumerate discovered resources: %v\n", err)
 	}
 
-	// 8. Clean up intermediate files
-	// Must happen before validation so terraform validate doesn't see duplicate
-	// resource definitions in both generated.tf and the per-type split files.
-	_ = os.Remove(generatedFile)
-	_ = os.Remove(filepath.Join(opts.OutputDir, "query.tfquery.hcl"))
-	_ = os.Remove(filepath.Join(opts.OutputDir, "singletons_import.tf"))
-	_ = os.Remove(filepath.Join(opts.OutputDir, "jamf_connect_import.tf"))
-
-	// 8. Validate and auto-fix conditionally invalid attributes
-	var providerSchema *postprocess.ProviderSchema
-	if schemas != nil {
-		providerSchema = postprocess.LoadProviderSchema(schemas)
-	}
-	fixResult, err := postprocess.FixValidationErrors(opts.OutputDir, providerSchema)
-	if err != nil {
-		if !postprocess.Quiet {
-			fmt.Printf("  Warning: validation fix failed: %v\n", err)
-		}
-	} else {
-		if fixResult.Fixed > 0 {
-			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
-		}
-		for _, v := range fixResult.RequiredVars {
-			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
-		}
-	}
-
-	return fixResult, nil
+	return &IntermediateResult{
+		Registry:        reg,
+		GeneratedFile:   generatedFile,
+		OutputDir:       opts.OutputDir,
+		PackageFiles:    packageFiles,
+		Resources:       discovered,
+		ImportFiles:     importFiles,
+		PlatformCreds:   platformCreds,
+		ProviderSchemas: schemas,
+	}, nil
 }

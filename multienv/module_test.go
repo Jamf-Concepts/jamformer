@@ -55,7 +55,7 @@ func TestHashFile(t *testing.T) {
 func TestGenerateModuleProviders(t *testing.T) {
 	t.Run("with pinned version", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := generateModuleProviders(dir, "1.2.3", ""); err != nil {
+		if err := generateModuleProviders(dir, proProvider{}, "1.2.3", ""); err != nil {
 			t.Fatal(err)
 		}
 		content, _ := os.ReadFile(filepath.Join(dir, "providers.tf"))
@@ -69,7 +69,7 @@ func TestGenerateModuleProviders(t *testing.T) {
 
 	t.Run("without version", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := generateModuleProviders(dir, "", ""); err != nil {
+		if err := generateModuleProviders(dir, proProvider{}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		content, _ := os.ReadFile(filepath.Join(dir, "providers.tf"))
@@ -530,5 +530,46 @@ func TestShouldSkipForModule(t *testing.T) {
 		if got != tt.skip {
 			t.Errorf("shouldSkipForModule(%q) = %v, want %v", tt.name, got, tt.skip)
 		}
+	}
+}
+
+func TestScanWriteOnlyVarRefs_NestedObjectAttr(t *testing.T) {
+	dir := t.TempDir()
+	// A top-level secret and a secret nested inside an object-expression
+	// attribute (the pro_* idiom). Both must be detected; a diff var passed in
+	// `known` must be skipped.
+	src := `resource "jamfplatform_pro_disk_encryption_configuration" "test" {
+  some_diff_attr = var.known_diff
+  institutional_recovery_key = {
+    data = var.dek_secret
+  }
+}
+
+resource "jamfplatform_pro_account" "a" {
+  password = var.account_secret
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "r.tf"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	known := map[string]bool{"known_diff": true}
+	vars := scanWriteOnlyVarRefs(dir, known)
+
+	got := map[string]bool{}
+	for _, v := range vars {
+		got[v.Name] = true
+		if !v.Sensitive {
+			t.Errorf("var %q should be marked sensitive", v.Name)
+		}
+	}
+	if !got["dek_secret"] {
+		t.Error("expected nested-object var dek_secret to be detected")
+	}
+	if !got["account_secret"] {
+		t.Error("expected top-level var account_secret to be detected")
+	}
+	if got["known_diff"] {
+		t.Error("known diff var should not be re-collected")
 	}
 }
