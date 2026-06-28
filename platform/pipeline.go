@@ -321,6 +321,18 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		logStep("  Stripped %d compliance-benchmark-derived resource(s)", stripped)
 	}
 
+	// 6a2. Normalize prevent_activation_lock = true on Shared iPad prestages —
+	// the only value Jamf permits (the UI forces it, the API rejects false). A
+	// legacy prestage can read back with false; exporting that verbatim neither
+	// validates nor applies.
+	if n, err := NormalizeSharedIpadActivationLock(generatedFile); err != nil {
+		if !opts.Quiet {
+			fmt.Printf("  Warning: could not normalize Shared iPad activation-lock: %v\n", err)
+		}
+	} else if n > 0 {
+		logStep("  Set prevent_activation_lock=true on %d Shared iPad prestage(s) (Jamf-enforced)", n)
+	}
+
 	if !opts.Quiet {
 		counts, _ := CountResources(generatedFile)
 		for resourceType, count := range counts {
