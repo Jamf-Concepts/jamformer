@@ -24,6 +24,7 @@ type attrInfo struct {
 	Optional    bool
 	Computed    bool
 	Sensitive   bool
+	WriteOnly   bool
 	Type        cty.Type // attribute type (cty.String, cty.Bool, cty.Number, etc.)
 	NestingMode string   // "single", "list", "set" for nested_type attributes; empty for plain
 }
@@ -58,6 +59,7 @@ func collectAttrs(out map[string]map[string]attrInfo, path string, block *tfjson
 			Optional:  attr.Optional,
 			Computed:  attr.Computed,
 			Sensitive: attr.Sensitive,
+			WriteOnly: attr.WriteOnly,
 			Type:      attr.AttributeType,
 		}
 		if attr.AttributeNestedType != nil {
@@ -92,6 +94,7 @@ func collectNestedType(out map[string]map[string]attrInfo, path string, nt *tfjs
 			Optional:  attr.Optional,
 			Computed:  attr.Computed,
 			Sensitive: attr.Sensitive,
+			WriteOnly: attr.WriteOnly,
 			Type:      attr.AttributeType,
 		}
 		if attr.AttributeNestedType != nil {
@@ -146,6 +149,43 @@ func (ps *ProviderSchema) isSensitive(resourceType, blockPath, attrName string) 
 		return false
 	}
 	return info.Sensitive
+}
+
+// isWriteOnly reports whether an attribute is WriteOnly (a user-supplied secret
+// the provider never returns on read). These are wired to variables by
+// injectRequiredWriteOnly during processing, so the validation auto-fix must
+// leave them alone rather than wire them a second time.
+func (ps *ProviderSchema) isWriteOnly(resourceType, blockPath, attrName string) bool {
+	if ps == nil {
+		return false
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return false
+	}
+	attrs, ok := paths[blockPath]
+	if !ok {
+		return false
+	}
+	info, ok := attrs[attrName]
+	if !ok {
+		return false
+	}
+	return info.WriteOnly
+}
+
+// requiredTopLevelAttrs returns the top-level (blockPath "") attribute info for a
+// resource type, keyed by attribute name. Used to inject placeholders for
+// Required attributes the server never returns on read.
+func (ps *ProviderSchema) requiredTopLevelAttrs(resourceType string) map[string]attrInfo {
+	if ps == nil {
+		return nil
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return nil
+	}
+	return paths[""]
 }
 
 // zeroValue returns the cty zero value for the attribute's type.
@@ -296,12 +336,27 @@ func processObjectExpr(exprBytes []byte, resourceType, schemaPath string, schema
 		return nil, false
 	}
 
+	return wrapObjectInner(newBytes), true
+}
+
+// wrapObjectInner re-wraps a serialized object-expression body in braces without
+// the leading/trailing blank lines that the strip/rewrite round-trip otherwise
+// leaves (terraform fmt does not collapse blank lines inside object-expression
+// literals). Trimming only the outer whitespace is safe: the body's edges are
+// always structural, never the interior of a multiline string value. An emptied
+// object collapses to "{}".
+func wrapObjectInner(innerBytes []byte) []byte {
+	inner := bytes.TrimSpace(innerBytes)
+	if len(inner) == 0 {
+		return []byte("{}")
+	}
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	buf.WriteByte('\n')
-	buf.Write(newBytes)
+	buf.Write(inner)
+	buf.WriteByte('\n')
 	buf.WriteByte('}')
-	return buf.Bytes(), true
+	return buf.Bytes()
 }
 
 // processListOfObjects processes a list of object expressions [{ ... }, { ... }],

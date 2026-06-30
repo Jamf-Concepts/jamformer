@@ -14,31 +14,49 @@ import (
 // ExtractStringValue extracts a string or numeric literal from an HCL
 // attribute's expression tokens. Exported for use by provider packages.
 func ExtractStringValue(attr *hclwrite.Attribute) string {
-	tokens := attr.Expr().BuildTokens(nil)
+	if attr == nil {
+		return ""
+	}
+	return tokensStringValue(attr.Expr().BuildTokens(nil))
+}
+
+// tokensStringValue extracts the first string or numeric literal from a token
+// stream (quoted literals take precedence over numeric). A numeric literal
+// preceded by a unary minus is returned with its sign, since HCL tokenises a
+// negative number like -1 as TokenMinus + TokenNumberLit — dropping the sign
+// would turn the sentinel -1 ("none") into a positive id and corrupt the value.
+func tokensStringValue(tokens hclwrite.Tokens) string {
 	for _, tok := range tokens {
 		if tok.Type == hclsyntax.TokenQuotedLit {
 			return string(tok.Bytes)
 		}
 	}
-	// Also try numeric literals (some IDs come as numbers)
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		if tok.Type == hclsyntax.TokenNumberLit {
+			if i > 0 && tokens[i-1].Type == hclsyntax.TokenMinus {
+				return "-" + string(tok.Bytes)
+			}
 			return string(tok.Bytes)
 		}
 	}
 	return ""
 }
 
-// extractListValues extracts string or numeric values from a list expression.
+// extractListValues extracts string or numeric values from a list expression,
+// preserving a leading unary minus on negative numbers (see tokensStringValue).
 func extractListValues(attr *hclwrite.Attribute) []string {
 	tokens := attr.Expr().BuildTokens(nil)
 	var values []string
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		switch tok.Type {
 		case hclsyntax.TokenQuotedLit:
 			values = append(values, string(tok.Bytes))
 		case hclsyntax.TokenNumberLit:
-			values = append(values, string(tok.Bytes))
+			if i > 0 && tokens[i-1].Type == hclsyntax.TokenMinus {
+				values = append(values, "-"+string(tok.Bytes))
+			} else {
+				values = append(values, string(tok.Bytes))
+			}
 		}
 	}
 	return values
@@ -49,6 +67,15 @@ func extractListValues(attr *hclwrite.Attribute) []string {
 func referenceTokens(ref string) hclwrite.Tokens {
 	return hclwrite.Tokens{
 		{Type: hclsyntax.TokenIdent, Bytes: []byte(ref)},
+	}
+}
+
+// numericReferenceTokens wraps a reference in tonumber(), for a number-typed
+// source attribute that points at a string-typed target attribute (e.g. an
+// Int64 profile_id referencing a config profile's string id).
+func numericReferenceTokens(ref string) hclwrite.Tokens {
+	return hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("tonumber(" + ref + ")")},
 	}
 }
 

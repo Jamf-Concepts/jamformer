@@ -789,3 +789,57 @@ func TestNavigateToBody_PartiallyValidPath(t *testing.T) {
 		t.Error("expected nil when intermediate block doesn't exist")
 	}
 }
+
+func TestSetAttributeValueAtLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r.tf")
+	content := `resource "jamfplatform_pro_patch_external_source" "s" {
+  host_name = null
+}
+
+resource "jamfplatform_pro_mobile_device_prestage_enrollment" "p" {
+  prevent_activation_lock                      = false
+}
+
+resource "jamfplatform_pro_disk_encryption_configuration" "d" {
+  institutional_recovery_key = {
+    data             = null # sensitive
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wire a top-level required-null to a variable.
+	if !setAttributeValueAtLine(path, 2, "var.host") {
+		t.Fatal("expected host_name line rewritten")
+	}
+	// Set a bool conditional attribute.
+	if !setAttributeValueAtLine(path, 6, "true") {
+		t.Fatal("expected prevent_activation_lock line rewritten")
+	}
+	// Rewrite a nested attribute, preserving its trailing comment.
+	if !setAttributeValueAtLine(path, 11, "var.dek") {
+		t.Fatal("expected nested data line rewritten")
+	}
+
+	out, _ := os.ReadFile(path)
+	s := string(out)
+	for _, want := range []string{
+		"host_name = var.host",
+		"prevent_activation_lock                      = true",
+		"data             = var.dek # sensitive",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("expected %q in:\n%s", want, s)
+		}
+	}
+	// Out-of-range and non-attribute lines are no-ops.
+	if setAttributeValueAtLine(path, 9999, "x") {
+		t.Error("expected false for out-of-range line")
+	}
+	if setAttributeValueAtLine(path, 1, "x") {
+		t.Error("expected false for a resource declaration line")
+	}
+}

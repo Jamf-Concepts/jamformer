@@ -404,20 +404,20 @@ func printResourceList(provider string) {
 	showJSC := provider == "" || provider == "jsc"
 
 	if !showPro && !showProtect && !showPlatform && !showJSC {
-		fmt.Fprintf(os.Stderr, "Unknown provider %q. Valid providers: jamfpro, jamfprotect, jamfplatform, jsc\n", provider)
+		fmt.Fprintf(os.Stderr, "Unknown provider %q. Valid providers: jamfplatform, jamfprotect, jsc, jamfpro\n", provider)
 		os.Exit(1)
 	}
 
-	if showPro {
-		fmt.Println("Jamf Pro (jamfpro):")
-		sorted := slices.Clone(pro.Resources)
-		slices.SortFunc(sorted, func(a, b pro.ResourceDef) int {
+	if showPlatform {
+		fmt.Println("Jamf Platform (jamfplatform) [default]:")
+		sorted := slices.Clone(platform.Resources)
+		slices.SortFunc(sorted, func(a, b platform.ResourceDef) int {
 			return strings.Compare(a.FilterKey, b.FilterKey)
 		})
 		for _, r := range sorted {
 			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
 		}
-		if showProtect || showPlatform || showJSC {
+		if showProtect || showJSC || showPro {
 			fmt.Println()
 		}
 	}
@@ -430,20 +430,7 @@ func printResourceList(provider string) {
 		for _, r := range sorted {
 			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
 		}
-		if showPlatform || showJSC {
-			fmt.Println()
-		}
-	}
-	if showPlatform {
-		fmt.Println("Jamf Platform (jamfplatform):")
-		sorted := slices.Clone(platform.Resources)
-		slices.SortFunc(sorted, func(a, b platform.ResourceDef) int {
-			return strings.Compare(a.FilterKey, b.FilterKey)
-		})
-		for _, r := range sorted {
-			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
-		}
-		if showJSC {
+		if showJSC || showPro {
 			fmt.Println()
 		}
 	}
@@ -451,6 +438,19 @@ func printResourceList(provider string) {
 		fmt.Println("JSC - Jamf Security Cloud (jsc):")
 		sorted := slices.Clone(jsc.Resources)
 		slices.SortFunc(sorted, func(a, b jsc.ResourceDef) int {
+			return strings.Compare(a.FilterKey, b.FilterKey)
+		})
+		for _, r := range sorted {
+			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
+		}
+		if showPro {
+			fmt.Println()
+		}
+	}
+	if showPro {
+		fmt.Println("Jamf Pro (jamfpro) - community provider by Deployment Theory:")
+		sorted := slices.Clone(pro.Resources)
+		slices.SortFunc(sorted, func(a, b pro.ResourceDef) int {
 			return strings.Compare(a.FilterKey, b.FilterKey)
 		})
 		for _, r := range sorted {
@@ -490,7 +490,7 @@ func main() {
 	excludeFlag := flag.String("exclude-resources", "", "Space-separated list of resource types to exclude (see -help filtering) [env: JAMFORMER_EXCLUDE]")
 	skipReferences := flag.Bool("skip-references", false, "Skip cross-resource reference resolution (leave raw ID values) [env: JAMFORMER_SKIP_REFERENCES]")
 	skipImportBlocks := flag.Bool("skip-import-blocks", false, "Exclude import blocks from output (for applying to a new instance) [env: JAMFORMER_SKIP_IMPORT_BLOCKS]")
-	providerFlag := flag.String("provider", "", "Terraform provider: jamfpro (default), jamfprotect, jamfplatform, or jsc [env: JAMFORMER_PROVIDER]")
+	providerFlag := flag.String("provider", "", "Terraform provider: jamfplatform (default), jamfprotect, jsc, or jamfpro [env: JAMFORMER_PROVIDER]")
 	providerVersionFlag := flag.String("provider-version", "", "Pin a specific provider version (see -help provider-version) [env: JAMFORMER_PROVIDER_VERSION]")
 	allowDevOverrides := flag.Bool("allow-dev-overrides", false, "Allow Terraform provider dev_overrides from CLI config (see -help dev-overrides) [env: JAMFORMER_ALLOW_DEV_OVERRIDES]")
 	compactMode := flag.Bool("compact", false, "Consolidate simple resource types into for_each patterns (see -help compact) [env: JAMFORMER_COMPACT]")
@@ -597,7 +597,7 @@ func main() {
 
 	// Validate provider flag if explicitly set
 	if *providerFlag != "" && *providerFlag != "jamfpro" && *providerFlag != "jamfprotect" && *providerFlag != "jamfplatform" && *providerFlag != "jsc" {
-		log.Fatalf("Invalid provider %q. Valid options: jamfpro, jamfprotect, jamfplatform, jsc", *providerFlag)
+		log.Fatalf("Invalid provider %q. Valid options: jamfplatform, jamfprotect, jsc, jamfpro", *providerFlag)
 	}
 
 	// Parse and validate multi-env flag
@@ -607,8 +607,8 @@ func main() {
 		for name := range strings.FieldsSeq(raw) {
 			multiEnvNames = append(multiEnvNames, strings.ToLower(strings.TrimSpace(name)))
 		}
-		if len(multiEnvNames) < 2 {
-			log.Fatal("-multi-env requires at least 2 environment names")
+		if len(multiEnvNames) < 1 {
+			log.Fatal("-multi-env requires at least one environment name")
 		}
 		// Check for duplicates
 		seen := make(map[string]bool)
@@ -618,11 +618,17 @@ func main() {
 			}
 			seen[name] = true
 		}
-		// Multi-env only supports jamfpro currently
-		if *providerFlag != "" && *providerFlag != "jamfpro" {
-			log.Fatal("-multi-env currently only supports the jamfpro provider")
+		// Multi-env supports the jamfplatform and jamfpro providers (those with a
+		// discovery/generate split). Protect and JSC are not supported. An unset
+		// provider follows the global default (jamfplatform).
+		switch *providerFlag {
+		case "":
+			*providerFlag = "jamfplatform"
+		case "jamfplatform", "jamfpro":
+			// supported
+		default:
+			log.Fatalf("-multi-env supports only the jamfplatform and jamfpro providers (got %q)", *providerFlag)
 		}
-		*providerFlag = "jamfpro" // force jamfpro
 		if *compactMode {
 			log.Fatal("-multi-env and -compact cannot be used together")
 		}
@@ -642,25 +648,25 @@ func main() {
 			printSplash()
 			splashShown = true
 			reader := bufio.NewReader(os.Stdin)
-			fmt.Printf("  %s[P]%s Jamf Pro %s(default)%s\n", uBlue, uReset, uDim, uReset)
+			fmt.Printf("  %s[L]%s Jamf Platform %s(default)%s\n", uCyan, uReset, uDim, uReset)
 			fmt.Printf("  %s[T]%s Jamf Protect\n", uPurple, uReset)
-			fmt.Printf("  %s[L]%s Jamf Platform\n", uCyan, uReset)
 			fmt.Printf("  %s[S]%s JSC (Jamf Security Cloud)\n", uYellow, uReset)
+			fmt.Printf("  %s[P]%s Jamf Pro %s(community provider by Deployment Theory)%s\n", uBlue, uReset, uDim, uReset)
 			fmt.Println()
-			choice := promptLine(reader, fmt.Sprintf("%sChoose provider%s %s(P/t/l/s)%s: ", uBold, uReset, uDim, uReset))
+			choice := promptLine(reader, fmt.Sprintf("%sChoose provider%s %s(L/t/s/p)%s: ", uBold, uReset, uDim, uReset))
 			choice = strings.ToLower(strings.TrimSpace(choice))
 			switch choice {
 			case "t":
 				*providerFlag = "jamfprotect"
-			case "l":
-				*providerFlag = "jamfplatform"
 			case "s":
 				*providerFlag = "jsc"
-			default:
+			case "p":
 				*providerFlag = "jamfpro"
+			default:
+				*providerFlag = "jamfplatform"
 			}
 		} else {
-			*providerFlag = "jamfpro"
+			*providerFlag = "jamfplatform"
 		}
 	}
 
@@ -833,7 +839,7 @@ func main() {
 	default:
 		log.Fatal("No authentication credentials provided")
 	}
-	if isPlatform && *tenantID == "" {
+	if !isMultiEnv && isPlatform && *tenantID == "" {
 		log.Fatal("Jamf Platform requires a tenant ID (JAMF_TENANT_ID)")
 	}
 
@@ -968,18 +974,28 @@ func main() {
 		}
 	}
 
-	// Prompt to skip package downloads if packages are included (Jamf Pro only)
-	if !isProtect && !isPlatform && !isJSC && interactive && !*skipPackageDownloads && (selectedResources == nil || selectedResources["packages"]) {
+	// Prompt to skip package downloads if packages are included (Jamf Pro and
+	// Jamf Platform). Pro filters on the "packages" key; Platform on "package".
+	pkgFilterKey := "packages"
+	if isPlatform {
+		pkgFilterKey = "package"
+	}
+	if !isProtect && !isJSC && interactive && !*skipPackageDownloads && (selectedResources == nil || selectedResources[pkgFilterKey]) {
 		reader := bufio.NewReader(os.Stdin)
-		answer := promptLine(reader, fmt.Sprintf("Download package files from the Cloud Distribution Point? %s(can be slow/large) [y/N]%s: ", uDim, uReset))
+		prompt := "Download package files from the Cloud Distribution Point?"
+		if isPlatform {
+			prompt = "Download package files from the Jamf Cloud Distribution Service?"
+		}
+		answer := promptLine(reader, fmt.Sprintf("%s %s(can be slow/large) [y/N]%s: ", prompt, uDim, uReset))
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		if answer != "y" && answer != "yes" {
 			*skipPackageDownloads = true
 		}
 	}
 
-	// Prompt to split output files by category (Jamf Pro only)
-	if !isProtect && !isPlatform && !isJSC && interactive && !*splitByCategory {
+	// Prompt to split output files by category (Jamf Pro and Jamf Platform —
+	// both have categories; Protect and JSC do not)
+	if !isProtect && !isJSC && interactive && !*splitByCategory {
 		reader := bufio.NewReader(os.Stdin)
 		answer := promptLine(reader, fmt.Sprintf("Split output files by category? %s(e.g. policies_production.tf) [y/N]%s: ", uDim, uReset))
 		answer = strings.ToLower(strings.TrimSpace(answer))
@@ -1014,11 +1030,12 @@ func main() {
 	var fixResult *postprocess.FixResult
 	if isMultiEnv {
 		// Multi-env mode: resolve per-env credentials and run the merge pipeline
-		envConfigs, err := resolveMultiEnvCredentials(multiEnvNames, interactive)
+		envConfigs, err := resolveMultiEnvCredentials(*providerFlag, multiEnvNames, interactive)
 		if err != nil {
 			log.Fatalf("Multi-env credential resolution failed: %v", err)
 		}
 		multienvOpts := &multienv.Options{
+			Provider:             *providerFlag,
 			Envs:                 envConfigs,
 			SourceEnv:            *sourceEnvFlag,
 			OutputDir:            absOutput,
@@ -1039,16 +1056,18 @@ func main() {
 		pipelineErr = multienv.RunPipeline(multienvOpts)
 	} else if isPlatform {
 		platformOpts := &platform.PipelineOptions{
-			OutputDir:         absOutput,
-			BaseURL:           *url,
-			ClientID:          *clientID,
-			ClientSecret:      *clientSecret,
-			TenantID:          *tenantID,
-			SelectedResources: selectedResources,
-			SkipReferences:    *skipReferences,
-			ProviderVersion:   *providerVersionFlag,
-			Quiet:             quiet,
-			Verbose:           *verbose,
+			OutputDir:            absOutput,
+			BaseURL:              *url,
+			ClientID:             *clientID,
+			ClientSecret:         *clientSecret,
+			TenantID:             *tenantID,
+			SelectedResources:    selectedResources,
+			SkipReferences:       *skipReferences,
+			SkipPackageDownloads: *skipPackageDownloads,
+			SplitByCategory:      *splitByCategory,
+			ProviderVersion:      *providerVersionFlag,
+			Quiet:                quiet,
+			Verbose:              *verbose,
 		}
 		if spin != nil {
 			platformOpts.StatusFunc = spin.Update
@@ -1489,8 +1508,71 @@ func parseResourceFilter(input string, nameMap map[string]string) map[string]boo
 
 // resolveMultiEnvCredentials builds EnvConfig for each environment from
 // env-name-suffixed environment variables (e.g. JAMF_URL_DEV, JAMF_CLIENT_ID_DEV).
-// If interactive and credentials are missing, prompts for each env.
-func resolveMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+// If interactive and credentials are missing, prompts for each env. The shape of
+// the credentials depends on the provider.
+func resolveMultiEnvCredentials(provider string, envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+	if provider == "jamfplatform" {
+		return resolvePlatformMultiEnvCredentials(envNames, interactive)
+	}
+	return resolveProMultiEnvCredentials(envNames, interactive)
+}
+
+// resolvePlatformMultiEnvCredentials resolves per-env Jamf Platform credentials.
+// Jamf Platform is OAuth2 only and uses a regional API gateway base URL (no
+// .jamfcloud shorthand). The tenant ID is optional (enables packages, Jamf
+// Connect, and Self Service branding-image downloads).
+func resolvePlatformMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
+	var configs []multienv.EnvConfig
+	for _, name := range envNames {
+		upper := strings.ToUpper(name)
+		env := multienv.EnvConfig{
+			Name:         name,
+			AuthMethod:   "oauth2",
+			URL:          os.Getenv("JAMF_URL_" + upper),
+			ClientID:     os.Getenv("JAMF_CLIENT_ID_" + upper),
+			ClientSecret: os.Getenv("JAMF_CLIENT_SECRET_" + upper),
+			TenantID:     os.Getenv("JAMF_TENANT_ID_" + upper),
+		}
+
+		if (env.URL == "" || env.ClientID == "" || env.ClientSecret == "") && interactive {
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Printf("\n%sEnvironment: %s%s\n", uBold, name, uReset)
+			if env.URL == "" {
+				env.URL = promptLine(reader, fmt.Sprintf("  Jamf Platform base URL %s(e.g. https://us.apigw.jamf.com)%s: ", uDim, uReset))
+			}
+			if env.ClientID == "" {
+				env.ClientID = promptLine(reader, "  API Client ID: ")
+			}
+			if env.ClientSecret == "" {
+				env.ClientSecret = promptPassword("  API Client Secret: ")
+			}
+			if env.TenantID == "" {
+				env.TenantID = promptLine(reader, fmt.Sprintf("  Tenant ID %s(optional, enables packages/Jamf Connect/branding)%s: ", uDim, uReset))
+			}
+		}
+
+		// Normalize URL — Platform uses regional gateway URLs directly (no
+		// .jamfcloud shorthand expansion).
+		env.URL = strings.TrimRight(env.URL, "/")
+		if env.URL != "" && !strings.HasPrefix(env.URL, "https://") && !strings.HasPrefix(env.URL, "http://") {
+			env.URL = "https://" + env.URL
+		}
+
+		if env.URL == "" {
+			return nil, fmt.Errorf("missing base URL for environment %q (set JAMF_URL_%s)", name, upper)
+		}
+		if env.ClientID == "" || env.ClientSecret == "" {
+			return nil, fmt.Errorf("missing OAuth2 credentials for environment %q (set JAMF_CLIENT_ID_%s and JAMF_CLIENT_SECRET_%s)", name, upper, upper)
+		}
+
+		configs = append(configs, env)
+	}
+	return configs, nil
+}
+
+// resolveProMultiEnvCredentials resolves per-env Jamf Pro credentials (basic or
+// OAuth2), expanding bare instance names to <name>.jamfcloud.com.
+func resolveProMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
 	var configs []multienv.EnvConfig
 	for _, name := range envNames {
 		upper := strings.ToUpper(name)

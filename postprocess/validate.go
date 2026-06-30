@@ -34,9 +34,43 @@ var (
 	// requiredNullRe matches `The argument "attr.path" is required, but no definition was found.`
 	requiredNullRe = regexp.MustCompile(`The argument "([^"]+)" is required`)
 
+	// mustSetConfigRe matches the explicit-null form of a required attribute:
+	// `Must set a configuration value for the <attr> attribute` (top-level) or
+	// `Must set a configuration value for the <block>.<attr>` (nested, no
+	// trailing "attribute"). This fires when a Required attribute is present but
+	// set to null (a value the provider can't read back — a secret or unreadable
+	// field). The capture may be a dotted path (e.g. institutional_recovery_key.data).
+	mustSetConfigRe = regexp.MustCompile(`Must set a configuration value for the ([\w.]+)`)
+
+	// attrLineRe splits an `  attr = value  # comment` line into its assignment
+	// prefix, value, and optional trailing comment.
+	attrLineRe = regexp.MustCompile(`^(\s*[\w.]+\s*=\s*)(.*?)(\s*#.*)?$`)
+
 	// resourceDeclRe matches a resource block declaration.
 	resourceDeclRe = regexp.MustCompile(`resource\s+"([^"]+)"\s+"([^"]+)"`)
 )
+
+// setAttributeValueAtLine replaces the right-hand side of the attribute on the
+// given 1-based line with rawExpr (written verbatim — pass `true`, `"-1"`,
+// `var.x`, etc.), preserving indentation and any trailing comment. Operating by
+// line lets us fix nested attributes and non-string values that the hclwrite
+// top-level setter cannot. Returns true if the line was rewritten.
+func setAttributeValueAtLine(filePath string, line int, rawExpr string) bool {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	if line < 1 || line > len(lines) {
+		return false
+	}
+	m := attrLineRe.FindStringSubmatch(lines[line-1])
+	if m == nil {
+		return false
+	}
+	lines[line-1] = m[1] + rawExpr + m[3]
+	return os.WriteFile(filePath, []byte(strings.Join(lines, "\n")), 0644) == nil
+}
 
 // validationFix represents a fix to apply to a resource attribute.
 type validationFix struct {
@@ -109,6 +143,32 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 					filename: diag.Range.Filename,
 					line:     diag.Range.Start.Line,
 				})
+				continue
+			}
+
+			// Explicit-null Required attribute ("Must set a configuration value for
+			// the <attr> attribute"): the provider can't read it back (a secret or
+			// otherwise unreadable required field). Wire it to a sensitive variable
+			// at its exact line (handles nested attributes), so the user supplies
+			// the value rather than the config failing. WriteOnly attributes and
+			// their _wo_version companions are left to injectRequiredWriteOnly,
+			// which pairs them correctly (the secret → var, _wo_version → 1).
+			if m := mustSetConfigRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
+				attr := m[1]
+				if isWoVersionAttr(attr) {
+					continue
+				}
+				src, _ := os.ReadFile(filePath)
+				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+				if resType != "" && !schema.isWriteOnly(resType, "", attr) {
+					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attr)
+					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+						rv := RequiredVar{VarName: varName, AttrPath: attr, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
+						appendVariables(outputDir, []RequiredVar{rv})
+						result.RequiredVars = append(result.RequiredVars, rv)
+						fixed++
+					}
+				}
 				continue
 			}
 

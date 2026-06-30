@@ -347,6 +347,29 @@ func TestProgressWriter(t *testing.T) {
 	})
 }
 
+func TestProgressWriterListCompleteMarker(t *testing.T) {
+	// Real terraform query -json lines contain both a "list_complete":{...} object
+	// key and a "type":"list_complete" field; only the latter must be counted
+	// (one per finished list block). The "list_resource_found" lines must not.
+	var count int
+	pw := &progressWriter{
+		marker:   listCompleteMarker,
+		callback: func(c, _ int) { count = c },
+	}
+	lines := strings.Join([]string{
+		`{"list_resource_found":{"resource_type":"jamfplatform_pro_category"},"type":"list_resource_found"}`,
+		`{"list_complete":{"resource_type":"jamfplatform_pro_category","total":39},"type":"list_complete"}`,
+		`{"list_resource_found":{"resource_type":"jamfplatform_pro_department"},"type":"list_resource_found"}`,
+		`{"list_complete":{"resource_type":"jamfplatform_pro_department","total":1},"type":"list_complete"}`,
+		"",
+	}, "\n")
+	pw.Write([]byte(lines)) //nolint:errcheck
+
+	if count != 2 {
+		t.Errorf("expected 2 list_complete events counted, got %d", count)
+	}
+}
+
 func TestCtxDefault(t *testing.T) {
 	if Ctx == nil {
 		t.Fatal("Ctx should not be nil")

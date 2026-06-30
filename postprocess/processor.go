@@ -30,10 +30,23 @@ type ProcessOptions struct {
 	PackageFiles map[string]string
 	// PackageInfo maps package_name -> filename from discovery.
 	PackageInfo map[string]string
+	// PlatformPackageFiles maps a jamfplatform_pro_package file_name -> relative
+	// path for files downloaded from JCDS. When a package's file_name is present,
+	// post-processing switches it to upload mode: package_file_source = file(...)
+	// and the conflicting server-supplied hash attributes are removed.
+	PlatformPackageFiles map[string]string
 	// IconURLs maps icon Jamf ID -> CDN URL for icon_file_web_source.
 	IconURLs map[string]string
 	// EnrollmentCustomizationImageFiles maps enrollment customization Jamf ID -> relative path.
 	EnrollmentCustomizationImageFiles map[string]string
+	// ExtractSpecs declaratively drives string-attribute extraction to support
+	// files (scripts, profile payloads, app configs). Used by providers whose
+	// resources expose these as nested object attributes (e.g. jamfplatform).
+	// The jamfpro pipeline uses dedicated inline extraction instead.
+	ExtractSpecs []ExtractSpec
+	// SupportDirs lists extra directories (relative to support_files/) to create
+	// as recommended locations for user-supplied files (e.g. token directories).
+	SupportDirs []string
 	// SkipReferences disables cross-resource reference resolution, leaving raw ID values.
 	SkipReferences bool
 	// SplitByCategory splits categorised resource types into per-category output files.
@@ -44,6 +57,10 @@ type ProcessOptions struct {
 	// support_files/<prefix>/scripts/ instead of support_files/scripts/.
 	// Used by multi-env mode to separate files per environment.
 	SupportFilesPrefix string
+	// InjectRequiredWriteOnly wires Required WriteOnly attributes the server never
+	// returns to sensitive Terraform variables (and seeds their _wo_version
+	// companions with 1) so a generated config validates. Used by jamfplatform.
+	InjectRequiredWriteOnly bool
 }
 
 // Process reads the generated HCL file, rewrites ID references, extracts
@@ -68,9 +85,17 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	// Determine which resource types should be split into per-category files.
 	// Only active when SplitByCategory is set and categories were discovered
 	// (otherwise everything would land in *_uncategorised.tf).
-	var catSplitTypes map[string]bool
-	if opts.SplitByCategory && reg.HasType("jamfpro_category") {
-		catSplitTypes = categorySplitTypes(rules)
+	var catSplitTypes map[string]ReferenceRule
+	if opts.SplitByCategory {
+		cats := categorySplitTypes(rules)
+		// Only activate when the category type actually has discovered entries —
+		// otherwise everything would land in *_uncategorised.tf.
+		for _, r := range cats {
+			if reg.HasType(categoryTargetType(r)) {
+				catSplitTypes = cats
+				break
+			}
+		}
 	}
 	categoryFileMap := make(map[string]*hclwrite.File)    // "type:category" → file
 	labelCategories := make(map[string]map[string]string) // resourceType → (label → categoryLabel)
@@ -141,17 +166,39 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		supportRelBase = filepath.Join("support_files", opts.SupportFilesPrefix)
 	}
 
+	// Spec-driven extraction (e.g. jamfplatform): create the output subdirectory
+	// for each spec plus any recommended SupportDirs, and track collision-safe
+	// filenames per subdirectory.
+	specFileNames := make(map[string]map[string]int) // OutputSubdir -> (filename -> count)
+	for _, spec := range opts.ExtractSpecs {
+		if specFileNames[spec.OutputSubdir] == nil {
+			specFileNames[spec.OutputSubdir] = make(map[string]int)
+			if err := os.MkdirAll(filepath.Join(supportBase, spec.OutputSubdir), 0755); err != nil {
+				return fmt.Errorf("creating %s directory: %w", spec.OutputSubdir, err)
+			}
+		}
+	}
+	for _, dir := range opts.SupportDirs {
+		if err := os.MkdirAll(filepath.Join(supportBase, dir), 0755); err != nil {
+			return fmt.Errorf("creating %s directory: %w", dir, err)
+		}
+	}
+
 	// Group resource blocks by type
 	fileMap := make(map[string]*hclwrite.File)
 	for typeName := range typeMap {
 		fileMap[typeName] = hclwrite.NewEmptyFile()
 	}
 
-	// Separate file map for import blocks (Protect generates these in generated.tf)
+	// Separate file map for import blocks (Protect/Platform generate these in
+	// generated.tf). Import blocks are collected and written after the resource
+	// pass so we can drop imports whose target resource was skipped.
 	importFileMap := make(map[string]*hclwrite.File)
 	for typeName := range typeMap {
 		importFileMap[typeName] = hclwrite.NewEmptyFile()
 	}
+	var pendingImports []*hclwrite.Block  // import blocks awaiting skip filtering
+	skippedAddrs := make(map[string]bool) // resource addresses dropped by a skip rule
 
 	// Count resources per type for progress output.
 	typeCounts := make(map[string]int)
@@ -164,22 +211,17 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 	}
 
+	// Sensitive variables synthesised for Required WriteOnly attributes the server
+	// never returns; appended to variables.tf/terraform.tfvars after the block pass.
+	var requiredVars []requiredVar
+	requiredVarNames := make(map[string]bool)
+
 	processedTypes := make(map[string]bool)
 	for _, block := range f.Body().Blocks() {
-		// Handle import blocks — extract resource type from "to" attribute
-		// and place in a separate import file (used by Protect's terraform query output).
+		// Collect import blocks; they are written after the resource pass so
+		// imports targeting a skipped resource can be dropped.
 		if block.Type() == "import" {
-			toAttr := block.Body().GetAttribute("to")
-			if toAttr != nil {
-				toBytes := strings.TrimSpace(string(toAttr.Expr().BuildTokens(nil).Bytes()))
-				if parts := strings.SplitN(toBytes, ".", 2); len(parts) >= 1 {
-					resourceType := parts[0]
-					if outFile, ok := importFileMap[resourceType]; ok {
-						outFile.Body().AppendNewline()
-						appendBlock(outFile.Body(), block)
-					}
-				}
-			}
+			pendingImports = append(pendingImports, block)
 			continue
 		}
 
@@ -212,7 +254,13 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		// Determine category label for per-category file splitting. Must happen
 		// before -1 removal strips the attribute and before reference rewriting.
 		var categoryLabel string
-		if catSplitTypes[resourceType] {
+		// Pre-detection only applies to flat top-level category_id rules (Jamf Pro),
+		// where the -1 removal below would strip the attribute before the post-rewrite
+		// extraction. Nested rules (Jamf Platform: general.category_id) have no -1
+		// removal, so they are resolved after rewriting at the extractCategoryLabel
+		// step below — pre-detecting them here would wrongly mark them uncategorised
+		// (the attribute is absent at the top level).
+		if rule, ok := catSplitTypes[resourceType]; ok && len(rule.AttrPath) == 0 {
 			if attr := block.Body().GetAttribute("category_id"); attr != nil {
 				exprBytes := strings.TrimSpace(string(attr.Expr().BuildTokens(nil).Bytes()))
 				if exprBytes == "-1" || exprBytes == "\"-1\"" {
@@ -267,11 +315,67 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 		// Extract category label from rewritten reference (if not already
 		// determined as uncategorised from -1 removal above)
-		if catSplitTypes[resourceType] && categoryLabel == "" {
-			categoryLabel = extractCategoryLabel(block.Body(), reg)
+		if rule, ok := catSplitTypes[resourceType]; ok && categoryLabel == "" {
+			categoryLabel = extractCategoryLabel(block.Body(), rule, reg)
 			if categoryLabel == "" {
 				categoryLabel = "uncategorised"
 			}
+		}
+
+		// Spec-driven skip pass: drop vendor-managed/signed resources entirely.
+		skipResource := false
+		for _, spec := range opts.ExtractSpecs {
+			if spec.ResourceType != resourceType || spec.SkipFn == nil {
+				continue
+			}
+			if skip, reason := spec.SkipFn(specContent(block.Body(), spec)); skip {
+				nameAttrName := spec.NameAttr
+				if nameAttrName == "" {
+					nameAttrName = "name"
+				}
+				name := labels[1]
+				if nm := readLeafString(block.Body(), nil, spec.NameAttrPath, nameAttrName); nm != "" {
+					name = nm
+				}
+				if !Quiet {
+					fmt.Printf("  Skipping %s %q: %s\n", resourceType, name, reason)
+				}
+				_ = terraform.RemoveImportBlock(outputDir, resourceType+"."+labels[1])
+				skippedAddrs[resourceType+"."+labels[1]] = true
+				skipResource = true
+				break
+			}
+		}
+		if skipResource {
+			continue
+		}
+
+		// Skip non-creatable blueprint drafts: a blueprint with empty/absent
+		// scope.deviceGroups exists as a UI draft but cannot be created via the
+		// API (POST /blueprints rejects an empty device_groups with 400
+		// [NotEmpty]). The provider's SizeAtLeast(1) validator mirrors that, so
+		// such a draft would fail `terraform validate`. Drop it like a
+		// vendor-managed profile.
+		if resourceType == "jamfplatform_blueprints_blueprint" && hasEmptyDeviceGroups(block.Body()) {
+			name := labels[1]
+			if nm := block.Body().GetAttribute("name"); nm != nil {
+				if v := ExtractStringValue(nm); v != "" {
+					name = v
+				}
+			}
+			if !Quiet {
+				fmt.Printf("  Skipping blueprint %q: empty device_groups (non-creatable draft)\n", name)
+			}
+			addr := resourceType + "." + labels[1]
+			_ = terraform.RemoveImportBlock(outputDir, addr)
+			skippedAddrs[addr] = true
+			continue
+		}
+
+		// Wire Required WriteOnly secrets the server never returns to sensitive
+		// variables (and seed their _wo_version companions) so the config validates.
+		if opts.InjectRequiredWriteOnly && schema != nil {
+			requiredVars = append(requiredVars, injectRequiredWriteOnly(block.Body(), resourceType, labels[1], schema, requiredVarNames)...)
 		}
 
 		// Jamf Pro-specific resource processing (script/profile/package extraction)
@@ -314,6 +418,27 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 				if !resolved {
 					block.Body().SetAttributeValue("package_file_source", cty.StringVal("# TODO: set package file path"))
+				}
+			}
+		}
+
+		if resourceType == "jamfplatform_pro_package" && len(opts.PlatformPackageFiles) > 0 {
+			// Switch downloaded packages to JCDS upload mode: set package_file_source
+			// to a file() reference and drop the server-supplied hash attributes,
+			// which the provider rejects alongside package_file_source. Packages
+			// without a downloaded file stay as metadata + hashes (applied as-is).
+			if nameAttr := block.Body().GetAttribute("file_name"); nameAttr != nil {
+				fileName := ExtractStringValue(nameAttr)
+				if relPath, ok := opts.PlatformPackageFiles[fileName]; ok {
+					// package_file_source is a path string the provider opens and
+					// uploads — not file() contents (binary packages aren't UTF-8).
+					pathRef := fmt.Sprintf(`"${path.module}/%s"`, filepath.ToSlash(relPath))
+					block.Body().SetAttributeRaw("package_file_source", hclwrite.Tokens{
+						{Type: hclsyntax.TokenIdent, Bytes: []byte(pathRef)},
+					})
+					for _, h := range []string{"sha3_512", "sha256", "md5", "hash_type", "hash_value", "package_file_source_checksum"} {
+						block.Body().RemoveAttribute(h)
+					}
 				}
 			}
 		}
@@ -462,8 +587,21 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			}
 		}
 
+		// Spec-driven extraction pass (e.g. jamfplatform): write nested string
+		// attributes to support files and replace them with file() references.
+		for _, spec := range opts.ExtractSpecs {
+			if spec.ResourceType != resourceType {
+				continue
+			}
+			absDir := filepath.Join(supportBase, spec.OutputSubdir)
+			relDir := filepath.Join(supportRelBase, spec.OutputSubdir)
+			if _, err := extractStringAttr(block.Body(), spec, absDir, relDir, specFileNames[spec.OutputSubdir]); err != nil {
+				return fmt.Errorf("extracting %s for %s: %w", spec.AttrName, resourceType, err)
+			}
+		}
+
 		// Append to the appropriate file (per-category or per-type)
-		if catSplitTypes[resourceType] {
+		if _, ok := catSplitTypes[resourceType]; ok {
 			key := resourceType + ":" + categoryLabel
 			outFile, ok := categoryFileMap[key]
 			if !ok {
@@ -483,6 +621,12 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		}
 	}
 
+	// Append sensitive variable declarations for any Required WriteOnly attributes
+	// that were wired to var.<name> above.
+	if err := appendRequiredVars(outputDir, requiredVars); err != nil {
+		return err
+	}
+
 	// Write per-type files
 	for typeName, outFile := range fileMap {
 		filename, ok := typeMap[typeName]
@@ -497,6 +641,27 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 
 		if err := os.WriteFile(filepath.Join(outputDir, filename), content, 0644); err != nil {
 			return fmt.Errorf("writing %s: %w", filename, err)
+		}
+	}
+
+	// Distribute collected import blocks into per-type import files, dropping any
+	// whose target resource was skipped (e.g. a vendor-managed profile).
+	for _, block := range pendingImports {
+		toAttr := block.Body().GetAttribute("to")
+		if toAttr == nil {
+			continue
+		}
+		toBytes := strings.TrimSpace(string(toAttr.Expr().BuildTokens(nil).Bytes()))
+		if skippedAddrs[toBytes] {
+			continue
+		}
+		parts := strings.SplitN(toBytes, ".", 2)
+		if len(parts) < 1 {
+			continue
+		}
+		if outFile, ok := importFileMap[parts[0]]; ok {
+			outFile.Body().AppendNewline()
+			appendBlock(outFile.Body(), block)
 		}
 	}
 
@@ -560,6 +725,20 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	terraform.FormatDir(outputDir)
 
 	return nil
+}
+
+// hasEmptyDeviceGroups reports whether a blueprint's device_groups list is
+// absent or empty. Whitespace is collapsed before comparison so multi-line
+// empty tuples (e.g. "[\n]") are detected. A populated list (raw UUIDs or
+// rewritten references) returns false.
+func hasEmptyDeviceGroups(body *hclwrite.Body) bool {
+	attr := body.GetAttribute("device_groups")
+	if attr == nil {
+		return true
+	}
+	expr := string(attr.Expr().BuildTokens(nil).Bytes())
+	compact := strings.Join(strings.Fields(expr), "")
+	return compact == "" || compact == "[]" || compact == "null"
 }
 
 // appendTokenVars adds token file path variable definitions to variables.tf.

@@ -32,6 +32,19 @@ func (r *Registry) Register(tfResourceType, jamfID, tfAddress string) {
 	r.refs[tfResourceType][jamfID] = tfAddress
 }
 
+// Unregister removes a mapping for a Jamf resource type + ID. After removal,
+// Resolve returns false for it, so any reference to the (now absent) resource is
+// left as a raw ID rather than rewritten to a dangling Terraform address. Used
+// when post-processing strips resources (e.g. compliance-benchmark artifacts).
+func (r *Registry) Unregister(tfResourceType, jamfID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if typeMap, ok := r.refs[tfResourceType]; ok {
+		delete(typeMap, jamfID)
+	}
+}
+
 // Resolve looks up a Terraform resource address for a given Jamf resource type + ID.
 // Returns the address and true if found, or empty string and false if not.
 func (r *Registry) Resolve(tfResourceType, jamfID string) (string, bool) {

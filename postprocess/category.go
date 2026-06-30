@@ -14,40 +14,73 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-// categorySplitTypes returns the set of resource types that have a top-level
-// category_id reference rule and should be split into per-category output files.
-func categorySplitTypes(rules []ReferenceRule) map[string]bool {
-	types := make(map[string]bool)
+// categorySplitTypes returns resourceType → the single category_id reference
+// rule for types that should be split into per-category output files. Matches
+// both flat top-level category_id rules (Jamf Pro) and nested object-attribute
+// rules (Jamf Platform, e.g. AttrPath ["general"]); the rule carries the
+// AttrPath and category target type extractCategoryLabel needs.
+func categorySplitTypes(rules []ReferenceRule) map[string]ReferenceRule {
+	types := make(map[string]ReferenceRule)
 	for _, rule := range rules {
-		if rule.AttrName == "category_id" && len(rule.BlockPath) == 0 {
-			types[rule.ResourceType] = true
+		if rule.AttrName != "category_id" || rule.ElementAttr != "" || rule.IsList || len(rule.BlockPath) != 0 {
+			continue
+		}
+		if _, exists := types[rule.ResourceType]; !exists {
+			types[rule.ResourceType] = rule
 		}
 	}
 	return types
 }
 
+// categoryTargetType returns the category resource type a rule resolves against,
+// defaulting to "jamfpro_category".
+func categoryTargetType(rule ReferenceRule) string {
+	if len(rule.TargetTypes) > 0 {
+		return rule.TargetTypes[0]
+	}
+	return "jamfpro_category"
+}
+
+// categoryIDTokens returns the raw tokens of the category_id attribute located at
+// the rule's AttrPath (empty = top-level flat; ["general"] = inside the general
+// object expression), read-only.
+func categoryIDTokens(body *hclwrite.Body, attrPath []string) (hclwrite.Tokens, bool) {
+	if len(attrPath) == 0 {
+		if a := body.GetAttribute("category_id"); a != nil {
+			return a.Expr().BuildTokens(nil), true
+		}
+		return nil, false
+	}
+	var out hclwrite.Tokens
+	found := false
+	withLeafBody(body, nil, attrPath, func(leaf *hclwrite.Body) bool {
+		if a := leaf.GetAttribute("category_id"); a != nil {
+			out = a.Expr().BuildTokens(nil)
+			found = true
+		}
+		return false // read-only: never re-serialize
+	})
+	return out, found
+}
+
 // extractCategoryLabel extracts the category label from a resource block's
-// category_id attribute after reference rewriting. It checks for a rewritten
-// Terraform reference (jamfpro_category.<label>.id) first, then falls back to
-// a registry lookup for raw ID values. Returns empty string if no category
-// can be determined.
-func extractCategoryLabel(body *hclwrite.Body, reg *registry.Registry) string {
-	attr := body.GetAttribute("category_id")
-	if attr == nil {
+// category_id reference (at the rule's AttrPath) after reference rewriting. It
+// checks for a rewritten Terraform reference (<catType>.<label>.id) first, then
+// falls back to a registry lookup for raw ID values. Returns empty string if no
+// category can be determined.
+func extractCategoryLabel(body *hclwrite.Body, rule ReferenceRule, reg *registry.Registry) string {
+	tokens, ok := categoryIDTokens(body, rule.AttrPath)
+	if !ok {
 		return ""
 	}
+	catType := categoryTargetType(rule)
+	prefix := catType + "."
 
-	// After reference rewriting via referenceTokens(), category_id is a single
-	// TokenIdent with the full reference (e.g. "jamfpro_category.productivity.id").
-	// When parsed from source, it's separate tokens (ident, dot, ident, dot, ident).
-	// Handle both forms.
-	tokens := attr.Expr().BuildTokens(nil)
-
-	// Single-token form (from referenceTokens)
+	// Single-token form (from referenceTokens): "<catType>.<label>.id".
 	for _, tok := range tokens {
 		if tok.Type == hclsyntax.TokenIdent {
 			ref := string(tok.Bytes)
-			if strings.HasPrefix(ref, "jamfpro_category.") {
+			if strings.HasPrefix(ref, prefix) {
 				parts := strings.SplitN(ref, ".", 3)
 				if len(parts) >= 2 {
 					return parts[1]
@@ -70,15 +103,15 @@ func extractCategoryLabel(body *hclwrite.Body, reg *registry.Registry) string {
 			identTokens = nil
 		}
 	}
-	if len(identTokens) >= 2 && identTokens[0] == "jamfpro_category" {
+	if len(identTokens) >= 2 && identTokens[0] == catType {
 		return identTokens[1]
 	}
 
-	// Fall back to registry lookup for raw string/numeric IDs
+	// Fall back to registry lookup for raw string/numeric IDs.
 	if reg != nil {
-		val := ExtractStringValue(attr)
+		val := tokensStringValue(tokens)
 		if val != "" {
-			if addr, ok := reg.Resolve("jamfpro_category", val); ok {
+			if addr, ok := reg.Resolve(catType, val); ok {
 				parts := strings.SplitN(addr, ".", 2)
 				if len(parts) >= 2 {
 					return parts[1]
