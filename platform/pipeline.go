@@ -207,6 +207,16 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		return nil, fmt.Errorf("terraform query: %w", queryErr)
 	}
 
+	// terraform query never creates generatedFile when every selected list
+	// block returns zero resources. Every step below (label renaming, registry
+	// population, benchmark stripping, ...) assumes the file exists, so restore
+	// that invariant with an empty file instead of letting os.ReadFile fail.
+	if _, statErr := os.Stat(generatedFile); os.IsNotExist(statErr) {
+		if err := os.WriteFile(generatedFile, nil, 0644); err != nil {
+			return nil, fmt.Errorf("creating empty generated file: %w", err)
+		}
+	}
+
 	// 3b. Discover Jamf Connect config-profile links via the federated pro SDK.
 	// jamfplatform_pro_jamf_connect has no list resource, so it is not
 	// query-discoverable; the SDK enumerates the linked profiles and we write
