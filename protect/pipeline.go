@@ -94,6 +94,17 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	if err := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, protectEnv); err != nil {
 		return nil, fmt.Errorf("terraform query: %w", err)
 	}
+
+	// terraform query never creates generatedFile when every selected list
+	// block returns zero resources. Every step below (singleton merge, label
+	// renaming, registry population, ...) assumes the file exists, so restore
+	// that invariant with an empty file instead of letting os.ReadFile fail.
+	if _, statErr := os.Stat(generatedFile); os.IsNotExist(statErr) {
+		if err := os.WriteFile(generatedFile, nil, 0644); err != nil {
+			return nil, fmt.Errorf("creating empty generated file: %w", err)
+		}
+	}
+
 	idToName, err := ParseQueryEvents(eventsFile)
 	if err != nil {
 		if !opts.Quiet {
