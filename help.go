@@ -40,74 +40,92 @@ process listings.
 `,
 
 	"multi-env": `
-Multi-Environment Support (Advanced)
-─────────────────────────────────────
-Export multiple Jamf Pro environments into a single Terraform project
-using workspaces to target each environment independently.
+Multi-Environment Support (Advanced, Experimental)
+───────────────────────────────────────────────────
+Generates a Terraform project structured for a long-lived branch
+workflow: a shared module plus a per-environment root directory,
+where each git branch represents an environment (e.g. staging, main).
 
-This feature assumes familiarity with Terraform workspaces, state
-management, and multi-environment workflows. If you're still getting
-a single-instance project working, start there first.
+This produces more of a scaffold than the single-environment mode -
+expect to edit the generated module, the per-env roots, and the
+extracted variables before any of it is usable. If you're still
+getting a single-instance project working, start there first.
 
-  Prerequisites:
-    Your environments should already have matching configurations (same
-    policies, scripts, profiles). This is not a reconciliation tool for
-    wildly different instances.
+  Supported providers:
+    jamfplatform (default), jamfpro
+    Jamf Protect and JSC are not supported in multi-env mode.
 
   Usage:
-    jamformer -multi-env "dev staging prod"
+    jamformer -multi-env "staging prod"
+    jamformer -multi-env "prod"              (single env also accepted -
+                                               produces the module +
+                                               one environments/<env>/ dir)
+
+  Prerequisites:
+    Your environments should have matching resource names where
+    possible. Resources are matched across environments by name -
+    duplicate names within a resource type may cause incorrect
+    matching. Designed for environments intentionally kept in sync.
 
   Credentials:
     Set per-env credentials with an environment name suffix:
-      JAMF_URL_DEV, JAMF_CLIENT_ID_DEV, JAMF_CLIENT_SECRET_DEV
+      JAMF_URL_STAGING, JAMF_CLIENT_ID_STAGING, JAMF_CLIENT_SECRET_STAGING
       JAMF_URL_PROD, JAMF_CLIENT_ID_PROD, JAMF_CLIENT_SECRET_PROD
+    jamfplatform is OAuth2-only per env; JAMF_TENANT_ID_<ENV> is optional
+    (enables package / Jamf Connect / Self Service branding downloads).
+    jamfpro accepts basic auth or OAuth2 per env.
+
+  Output Structure:
+    generated/
+      modules/jamf/                  shared resource definitions
+        policies.tf                  resources in ALL environments
+        policies_staging_only.tf     resources only in staging
+        variables.tf                 module input variables
+        support_files/               files identical across environments
+      environments/
+        staging/
+          main.tf                    provider config + module call
+          backend.tf                 placeholder - configure your backend
+          variables.tf               auth + pass-through variables
+          terraform.tfvars
+          imports.tf                 module.jamf.<type>.<label> imports
+        prod/
+          ... (same layout)
 
   How It Works:
-    1. Runs discovery + terraform plan against each environment
+    1. Runs discovery + terraform plan against each environment,
+       independently
     2. Matches resources across environments by name
-    3. Generates a merged project using terraform.workspace:
-       - provider.tf uses local.env_urls[terraform.workspace]
-       - Import blocks use local.imports[terraform.workspace]
-       - Per-env tfvars for differing attribute values
-       - Support files extracted per environment into support_files/<env>/
+    3. Assembles modules/jamf/, extracting attributes that differ
+       between environments to var.xxx
+    4. Resources present in only some environments go into
+       *_<env>_only.tf files inside the module
+    5. Support files identical across environments live in the
+       module; divergent files are copied per environment
+    6. Each environments/<env>/ gets its own provider config,
+       backend placeholder, variables, tfvars, and import blocks
 
-  Using Workspaces:
-    terraform workspace new dev
-    terraform workspace select dev
-    terraform plan -var-file=dev.tfvars
+  Branch Workflow:
+    1. Commit the output and create a long-lived branch per
+       environment (e.g. staging, main for prod)
+    2. On each branch, configure backend.tf with your state backend
+    3. On each branch, delete *_<other_env>_only.tf files from the
+       module (e.g. on main, delete *_staging_only.tf)
+    4. Set branch protection so main only accepts merges from staging
+    5. Configure CI to run terraform apply in environments/<env>/
+       when code lands on the corresponding branch
+    6. Initial import per environment:
+         cd environments/<env> && terraform init && terraform apply
 
-  What Happens When Environments Differ:
-    Resources are matched by name. When they don't line up:
-
-    • Resource exists in all envs, same settings:
-      One resource block, per-env import IDs. Nothing special needed.
-
-    • Resource exists in all envs, different settings:
-      Differing attribute values are extracted to variables. Each
-      env's value goes into its tfvars file (dev.tfvars, prod.tfvars).
-      The resource block uses var.<name> instead of a literal value.
-
-    • Resource exists in some envs but not others:
-      A count conditional is added so the resource is only created
-      in workspaces where it exists:
-        count = contains(keys(local.imports[terraform.workspace]), ...) ? 1 : 0
-
-    • Resource exists in one env with a completely different name:
-      It won't match. It appears as a partial-env resource in the env
-      that has it, and is absent in the others.
-
-    • Support files (scripts, profiles) differ between envs:
-      Each env's files are extracted into support_files/<env>/.
-      The file() references use terraform.workspace to select the
-      right version. Edit in dev, copy to prod when ready.
-
-    The more your environments differ, the more conditionals and
-    variables the output will contain. For best results, keep your
-    environments in sync before running multi-env export.
+    Feature branches are created from staging, merged to staging via
+    PR, then promoted to main via PR. The shared module merges cleanly
+    because it's identical across branches.
 
   Flags:
-    -multi-env "dev staging prod"   Environment names (min 2, space/comma separated)
-    -source-env prod                Source of truth (default: first listed)
+    -multi-env "staging prod"   Environment names (space/comma separated)
+    -source-env prod            Source of truth (default: first listed)
+
+  Not compatible with -compact mode.
 `,
 
 	"compact": `
