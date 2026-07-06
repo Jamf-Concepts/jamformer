@@ -70,11 +70,11 @@ go build -o jamformer .
 ```bash
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-export JAMF_TENANT_ID='your-tenant-id'  # optional — enables package/Jamf Connect/branding downloads
+export JAMF_TENANT_ID='your-tenant-id'
 ./jamformer -url https://us.apigw.jamf.com
 ```
 
-Jamf Platform is OAuth2-only, and the URL is your regional API gateway (e.g. `https://us.apigw.jamf.com`, `https://eu.apigw.jamf.com`) rather than a Jamf Pro instance hostname — there's no shorthand expansion for it.
+Jamf Platform is OAuth2-only, and the URL is your regional API gateway (e.g. `https://us.apigw.jamf.com`, `https://eu.apigw.jamf.com`) rather than a Jamf Pro instance hostname — there's no shorthand expansion for it. `JAMF_TENANT_ID` is **required** (pro endpoints are tenant-scoped, like package downloads, Jamf Connect discovery, and Self Service branding image downloads) — jamformer fails fast if it's missing.
 
 Credentials are set via environment variables (`JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Run `./jamformer -help credentials` for auth-method detection details.
 
@@ -241,7 +241,7 @@ Protect and Platform use `terraform query`, which requires Terraform 1.14+. jamf
 - **Not production-ready output** — The generated HCL is a starting point that will likely need review and refinement before managing real infrastructure.
 - **Provider drift** — Some attributes may show as changes on `terraform plan` after import due to provider SDK defaults that don't round-trip. These are provider issues, not jamformer issues.
 - **Icons are not downloaded locally** — Referenced via CDN URL with `lifecycle { ignore_changes }` to prevent destroy/create on first apply, across all providers that support icons.
-- **Package downloads are best-effort** — Jamf Pro downloads from the Cloud Distribution Point by default. Jamf Platform downloads only packages resident in the Jamf Cloud Distribution Service (JCDS) when `JAMF_TENANT_ID` is set; catalog packages whose bytes live elsewhere stay as metadata + server-supplied hashes. Use `-skip-package-downloads` to skip in both cases.
+- **Package downloads are best-effort** — Jamf Pro downloads from the Cloud Distribution Point by default. Jamf Platform downloads only packages resident in the Jamf Cloud Distribution Service (JCDS); catalog packages whose bytes live elsewhere stay as metadata + server-supplied hashes. Use `-skip-package-downloads` to skip in both cases.
 - **Terraform 1.14+ required for Protect and Platform** — both use `terraform query` for discovery.
 - **JSC auth** — requires a local account or Jamf ID; SSO/SAML is not supported.
 
