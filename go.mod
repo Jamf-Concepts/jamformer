@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.10.0
-	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.0
+	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.1
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.50.0
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/hc-install v0.9.5
