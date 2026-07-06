@@ -65,34 +65,39 @@ go build -o jamformer .
 
 ## Quick Start
 
+`jamfplatform` is the default provider — no `-provider` flag needed:
+
 ```bash
-# Jamf Pro with OAuth2
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -url https://yourinstance.jamfcloud.com
+export JAMF_TENANT_ID='your-tenant-id'  # optional — enables package/Jamf Connect/branding downloads
+./jamformer -url https://us.apigw.jamf.com
+```
 
-# Jamf Pro with basic auth
+Jamf Platform is OAuth2-only, and the URL is your regional API gateway (e.g. `https://us.apigw.jamf.com`, `https://eu.apigw.jamf.com`) rather than a Jamf Pro instance hostname — there's no shorthand expansion for it.
+
+Credentials are set via environment variables (`JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Run `./jamformer -help credentials` for auth-method detection details.
+
+### Other providers
+
+Swap `-provider` to target Jamf Pro, Jamf Protect, or JSC instead — see [Supported Providers](#supported-providers) for auth requirements per provider.
+
+```bash
+# Jamf Pro (basic auth; shorthand URLs expand to <name>.jamfcloud.com)
 export JAMF_USERNAME=admin
 export JAMF_PASSWORD='yourpassword'
-./jamformer -url https://yourinstance.jamfcloud.com
+./jamformer -provider jamfpro -url yourinstance
 
-# Jamf Platform
+# Jamf Protect (OAuth2; shorthand URLs expand to <tenant>.protect.jamfcloud.com)
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -provider jamfplatform -url https://us.apigw.jamf.com
+./jamformer -provider jamfprotect -url your-tenant
 
-# Jamf Protect
-export JAMF_CLIENT_ID='your-client-id'
-export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -provider jamfprotect -url https://your-tenant.protect.jamfcloud.com
-
-# JSC (Jamf Security Cloud)
+# JSC (basic auth or Jamf ID only)
 export JAMF_USERNAME=your@email.com
 export JAMF_PASSWORD='yourpassword'
 ./jamformer -provider jsc
 ```
-
-Credentials are set via environment variables (`JAMF_USERNAME`, `JAMF_PASSWORD`, `JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Shorthand URLs are supported (e.g. `yourinstance` expands to `yourinstance.jamfcloud.com`). Run `./jamformer -help credentials` for auth-method detection details.
 
 ## Credentials & Permissions
 
