@@ -4,8 +4,8 @@ github.com/BobuSumisu/aho-corasick v1.0.3 h1:uuf+JHwU9CHP2Vx+wAy6jcksJThhJS9ehR8
 github.com/BobuSumisu/aho-corasick v1.0.3/go.mod h1:hm4jLcvZKI2vRF2WDU1N4p/jpWtpOzp3nLmi9AzX/XE=
 github.com/Jamf-Concepts/jamfplatform-go-sdk v0.10.0 h1:k2P8JOqagsatP88Bcm0/O2zHAhxgFJGNjkQUfiTd4AY=
 github.com/Jamf-Concepts/jamfplatform-go-sdk v0.10.0/go.mod h1:Y0ZlFaMZhu1HIPML3+o+AUtZ7SC9aJ3zMC7kdMYcqnI=
-github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.0 h1:ciLMwt8RdHnlLCzq9uxLGnlOtzVq3S1J9N1symA1MHA=
-github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.0/go.mod h1:wS0UZcnQBgn9UuyOp95tgf+dg92vGCu9iU5f0gAZjbg=
+github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.1 h1:/i+tnP1KHv+ZZEyiKFyLeUs3vTB4dzT9s2M31rQqwE0=
+github.com/Jamf-Concepts/jamfprotect-go-sdk v0.7.1/go.mod h1:wS0UZcnQBgn9UuyOp95tgf+dg92vGCu9iU5f0gAZjbg=
 github.com/Masterminds/goutils v1.1.1 h1:5nUrii3FMTL5diU80unEVvNevw1nH4+ZV4DSLVJLSYI=
 github.com/Masterminds/goutils v1.1.1/go.mod h1:8cTjp+g8YejhMuvIA5y2vz3BpJxksy863GQaJW2MFNU=
 github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAwZ/2OOE=
