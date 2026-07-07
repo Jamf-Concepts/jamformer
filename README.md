@@ -22,6 +22,8 @@
 
 A CLI tool that converts a Jamf instance into a structured Terraform project. It discovers resources via the Jamf API (or `terraform query` for Protect/Platform), generates Terraform import blocks, uses `terraform plan -generate-config-out` to produce HCL via the appropriate provider, then post-processes the output to add cross-resource references and organise resources into per-type files. The goal is to hand you a realistic scaffold to learn from and refine — not a finished product.
 
+> **📖 Full walkthrough:** [Adopting Terraform for Jamf with jamformer](https://concepts.jamf.com/en/guides/infrastructure-as-code/adopting-terraform-for-jamf-with-jamformer/) is the maintained, frequently-updated tutorial covering setup, usage, and workflows end to end. This README covers the essentials and the CLI reference; treat the guide as the source of truth for step-by-step how-to content.
+
 ## Supported Providers
 
 | Provider | Flag | Auth | Discovery Method |
@@ -31,37 +33,25 @@ A CLI tool that converts a Jamf instance into a structured Terraform project. It
 | [jsc](https://github.com/Jamf-Concepts/terraform-provider-jsctfprovider) | `-provider jsc` | Local account or Jamf ID | Terraform data sources |
 | [jamfpro](https://github.com/deploymenttheory/terraform-provider-jamfpro) — community provider by Deployment Theory | `-provider jamfpro` | Basic auth or OAuth2 | Jamf Pro API via SDK |
 
-> The `jamfplatform` provider now federates the full Jamf Pro surface (`jamfplatform_pro_*`) in addition to native Platform Services resources (blueprints, compliance benchmarks, device groups), and is the default. The `jamfpro` provider is the community-maintained provider by Deployment Theory and remains fully supported.
+`jamfplatform` federates the full Jamf Pro resource surface (`jamfplatform_pro_*`) alongside native Platform Services resources (blueprints, compliance benchmarks, device groups), and is the default. `jamfpro` is the community-maintained provider by Deployment Theory and remains fully supported.
 
-## Supported Resources
+## Resource Coverage
 
-For the current authoritative list, run `./jamformer -list-resources` (optionally filter with `-provider`).
+Coverage is broad across all four providers and grows as each provider adds resources, so rather than duplicate an enumeration here that will drift out of date, jamformer exposes it directly:
 
-### Jamf Pro
+```bash
+./jamformer -list-resources                        # all providers
+./jamformer -list-resources -provider jamfplatform  # a specific provider
+```
 
-Discoverable via the Jamf Pro API: Accounts, Account Groups, Advanced Computer Searches, Advanced Mobile Device Searches, Advanced User Searches, Allowed File Extensions, API Integrations, API Roles, App Installers, Buildings, Categories, Computer Extension Attributes, Computer Prestages, Departments, Device Enrollments (ADE), Disk Encryption Configurations, Dock Items, Enrollment Customizations, Icons, LDAP Servers, Mac Applications, macOS Configuration Profiles, Mobile Device Applications, Mobile Device Configuration Profiles, Mobile Device Extension Attributes, Mobile Device Prestages, Network Segments, Packages, Policies, Printers, Restricted Software, Scripts, Self Service Branding (iOS), Self Service Branding (macOS), Sites, Smart Computer Groups, Smart Mobile Device Groups, Static Computer Groups, Static Mobile Device Groups, User Groups, Volume Purchasing Locations (VPP), Webhooks.
-
-Singleton settings imported with fixed IDs (no API discovery needed): Access Management, Account-Driven User Enrollment, Activation Code, App Installer Global Settings, Client Check-In, Cloud Distribution Point, Computer Inventory Collection, Device Communication, Engage, Impact Alert Notifications, Managed Software Update Feature Toggle, Re-enrollment, Self Service, Self Service+, Service Discovery Enrollment, SMTP Server.
-
-### Jamf Protect
-
-Action Configurations, Analytics, Jamf Managed Analytics, Analytic Sets, API Clients, Custom Prevent Lists, Exception Sets, Groups, Plans, Removable Storage Control Sets, Roles, Telemetry, Unified Logging Filters, Users, Change Management (singleton), Data Forwarding (singleton), Data Retention (singleton).
-
-### Jamf Platform
-
-Blueprints, Compliance Benchmarks, Device Groups.
-
-### JSC - Jamf Security Cloud
-
-Discoverable via Terraform data sources: Activation Profiles, Entra IdP Connections, Hostname Mappings, Access Policies.
-
-Singleton: Secure Policy.
+This is always the authoritative, current list — it's generated from the same resource tables the pipeline runs against. See the [guide](https://concepts.jamf.com/en/guides/infrastructure-as-code/adopting-terraform-for-jamf-with-jamformer/) for a narrated tour of what's covered and how each resource type maps to Terraform.
 
 ## Prerequisites
 
 - [Go 1.26+](https://go.dev/dl/) (to build)
-- **Jamf Pro:** A user account with read/auditor access, or an API integration with appropriate privileges
-- **Jamf Protect / Platform:** An API client (OAuth2) with appropriate privileges. Requires Terraform 1.14+.
+- **Jamf Platform:** An API client (OAuth2) with appropriate privileges, plus a tenant ID. Requires Terraform 1.14+.
+- **Jamf Protect:** An API client (OAuth2) with appropriate privileges. Requires Terraform 1.14+.
+- **Jamf Pro:** A user account with read/auditor access, or an API integration with appropriate privileges.
 - **JSC:** A local account or Jamf ID with access to Jamf Security Cloud (radar.wandera.com). SSO/SAML accounts are not supported.
 
 Terraform 1.15.x is automatically downloaded if not already installed (cached in a temp directory). Use `-terraform-path` to override with a pre-installed binary.
@@ -76,55 +66,59 @@ go build -o jamformer .
 
 ## Quick Start
 
+`jamfplatform` is the default provider — no `-provider` flag needed:
+
 ```bash
-# Jamf Pro with OAuth2
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -url https://yourinstance.jamfcloud.com
+export JAMF_TENANT_ID='your-tenant-id'
+./jamformer -url https://us.apigw.jamf.com
+```
 
-# Jamf Pro with basic auth
+Jamf Platform is OAuth2-only, and the URL is your regional API gateway (e.g. `https://us.apigw.jamf.com`, `https://eu.apigw.jamf.com`) rather than a Jamf Pro instance hostname — there's no shorthand expansion for it. `JAMF_TENANT_ID` is **required** (pro endpoints are tenant-scoped, like package downloads, Jamf Connect discovery, and Self Service branding image downloads) — jamformer fails fast if it's missing.
+
+Credentials are set via environment variables (`JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Run `./jamformer -help credentials` for auth-method detection details.
+
+### Other providers
+
+Swap `-provider` to target Jamf Pro, Jamf Protect, or JSC instead — see [Supported Providers](#supported-providers) for auth requirements per provider.
+
+```bash
+# Jamf Pro (basic auth; shorthand URLs expand to <name>.jamfcloud.com)
 export JAMF_USERNAME=admin
 export JAMF_PASSWORD='yourpassword'
-./jamformer -url https://yourinstance.jamfcloud.com
+./jamformer -provider jamfpro -url yourinstance
 
-# Jamf Protect
+# Jamf Protect (OAuth2; shorthand URLs expand to <tenant>.protect.jamfcloud.com)
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -provider jamfprotect -url https://your-tenant.protect.jamfcloud.com
+./jamformer -provider jamfprotect -url your-tenant
 
-# Jamf Platform
-export JAMF_CLIENT_ID='your-client-id'
-export JAMF_CLIENT_SECRET='your-client-secret'
-./jamformer -provider jamfplatform -url https://us.apigw.jamf.com
-
-# JSC (Jamf Security Cloud)
+# JSC (basic auth or Jamf ID only)
 export JAMF_USERNAME=your@email.com
 export JAMF_PASSWORD='yourpassword'
 ./jamformer -provider jsc
 ```
 
-Credentials are set via environment variables (`JAMF_USERNAME`, `JAMF_PASSWORD`, `JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Shorthand URLs are supported (e.g. `yourinstance` expands to `yourinstance.jamfcloud.com`).
-
-## Credentials
+## Credentials & Permissions
 
 Credentials are sourced from environment variables or interactive prompts only (never CLI flags).
 
 | Env Var | Description |
 |---|---|
+| `JAMF_CLIENT_ID` | API client ID (OAuth2 — Jamf Platform / Protect) |
+| `JAMF_CLIENT_SECRET` | API client secret (OAuth2 — Jamf Platform / Protect) |
+| `JAMF_TENANT_ID` | Jamf Platform tenant ID (required, Jamf Platform only) |
 | `JAMF_USERNAME` | Jamf Pro / JSC username (basic auth) |
 | `JAMF_PASSWORD` | Jamf Pro / JSC password (basic auth) |
-| `JAMF_CLIENT_ID` | API client ID (OAuth2) |
-| `JAMF_CLIENT_SECRET` | API client secret (OAuth2) |
 
-### Jamf Pro API permissions
+jamformer needs **Read** on every object type it is asked to discover — it performs no writes.
 
-jamformer needs **Read** on every object type it is asked to discover. It performs no writes — generation is read-only against your instance.
+- **Jamf Platform / Protect:** create an OAuth2 API client with read access to every object type you intend to discover. Refer to the Jamf Platform / Protect admin documentation for current role names.
+- **Jamf Pro:** the built-in `Auditor` user role (basic auth) or an `Auditor` privilege set (OAuth2) is the easiest setup and covers everything jamformer supports. For minimum privilege, grant `Read` on each object type you intend to discover — privilege names in the Jamf Pro role editor generally map 1:1 to the `-list-resources` output.
+- **JSC:** a local account or Jamf ID with read access to every object type you intend to discover.
 
-- **Easiest setup:** assign the built-in `Auditor` user role (basic auth) or attach an `Auditor` privilege set to your API integration (OAuth2). `Auditor` grants read across Classic and Jamf Pro API objects, which covers the full range of resources jamformer supports.
-- **Minimum-privilege setup:** if you prefer to scope the integration down, grant `Read` on each object type for every resource you intend to discover. The names in the Jamf Pro privilege UI map one-to-one to the Supported Resources list (for example, `Read Computers`, `Read Policies`, `Read Scripts`, `Read Mobile Device Configuration Profiles`, `Read LDAP Servers`, `Read Categories`, `Read Sites`, `Read Buildings`, `Read Departments`, `Read Network Segments`, `Read Printers`, `Read Dock Items`, `Read Packages`, `Read Smart Computer Groups`, `Read Static Computer Groups`, `Read Advanced Computer Searches`, `Read Mac Applications`, `Read Mobile Device Applications`, `Read Computer Prestage Enrollments`, `Read Mobile Device Prestage Enrollments`, `Read Device Enrollment Program Instances`, `Read Volume Purchasing Administrator Accounts`, `Read Volume Purchasing Locations`, `Read Restricted Software`, `Read Webhooks`, `Read User Accounts`, `Read Account Groups`, `Read Enrollment Customizations`, `Read Icon`, `Read JSS URL`, `Read SMTP Server`, `Read Activation Code`, `Read Engage Settings`, `Read Self Service Settings`, `Read Client Check-In Settings`, `Read Computer Inventory Collection Settings`, `Read Disk Encryption Configurations`, `Read Allowed File Extensions`, `Read Advanced User Content Searches`, `Read User Content Searches`, `Read Mobile Device Extension Attributes`, `Read Computer Extension Attributes`, `Read Managed Software Updates`). Exact privilege names can change across Jamf Pro versions — check the role editor in your instance if a privilege is not where this list suggests.
-- **Singleton settings and many preference screens require additional `Read` privileges** beyond the core object types. If a resource comes back empty or a `terraform plan -generate-config-out` step reports "provider couldn't read resource," it is almost always a missing privilege on the integration or user.
-
-**Jamf Protect, Jamf Platform, JSC:** create an API client (OAuth2 for Protect/Platform; local account or Jamf ID for JSC) with read access to every object surfaced in the relevant "Supported Resources" subsection above. Refer to each product's admin documentation for the specific role names, which change independently of jamformer.
+If a resource type comes back empty, or a `terraform plan -generate-config-out` step reports "provider couldn't read resource," it's almost always a missing read privilege — see [Troubleshooting](#troubleshooting).
 
 ## Flags
 
@@ -132,111 +126,40 @@ jamformer needs **Read** on every object type it is asked to discover. It perfor
 |---|---|---|---|
 | `-provider` | `JAMFORMER_PROVIDER` | Provider: `jamfplatform`, `jamfprotect`, `jsc`, or `jamfpro` | `jamfplatform` |
 | `-url` | `JAMF_URL` | Jamf instance URL | |
-| `-include-resources` | `JAMFORMER_RESOURCES` | Space-separated resource types to include | all |
-| `-exclude-resources` | `JAMFORMER_EXCLUDE` | Space-separated resource types to exclude | |
+| `-include-resources` | `JAMFORMER_RESOURCES` | Space-separated resource types to include (`-help filtering`) | all |
+| `-exclude-resources` | `JAMFORMER_EXCLUDE` | Space-separated resource types to exclude (`-help filtering`) | |
 | `-output` | `JAMFORMER_OUTPUT` | Output directory | `generated` |
 | `-terraform-path` | `JAMFORMER_TERRAFORM_PATH` | Path to terraform binary (skip auto-download) | |
-| `-skip-package-downloads` | `JAMFORMER_SKIP_PACKAGE_DOWNLOADS` | Skip downloading packages (Jamf Pro: CDP; Jamf Platform: JCDS) | `false` |
+| `-skip-package-downloads` | `JAMFORMER_SKIP_PACKAGE_DOWNLOADS` | Skip downloading packages (Jamf Platform: JCDS; Jamf Pro: CDP) | `false` |
 | `-skip-references` | `JAMFORMER_SKIP_REFERENCES` | Skip cross-resource reference resolution | `false` |
 | `-skip-import-blocks` | `JAMFORMER_SKIP_IMPORT_BLOCKS` | Remove import blocks after generation | `false` |
 | `-verbose` | `JAMFORMER_VERBOSE` | Show terraform command output | `false` |
-| `-provider-version` | `JAMFORMER_PROVIDER_VERSION` | Pin a specific provider version (default: use latest, add `>=` constraint) | |
-| `-allow-dev-overrides` | `JAMFORMER_ALLOW_DEV_OVERRIDES` | Allow Terraform provider `dev_overrides` from CLI config | `false` |
-| `-compact` | `JAMFORMER_COMPACT` | Consolidate simple resource types into `for_each` patterns | `false` |
+| `-parallelism` | `JAMFORMER_PARALLELISM` | Concurrent Terraform provider reads during generation | `1` |
+| `-provider-version` | `JAMFORMER_PROVIDER_VERSION` | Pin a specific provider version (`-help provider-version`) | latest, `>=` constraint |
+| `-allow-dev-overrides` | `JAMFORMER_ALLOW_DEV_OVERRIDES` | Allow Terraform provider `dev_overrides` from CLI config (`-help dev-overrides`) | `false` |
+| `-compact` | `JAMFORMER_COMPACT` | Consolidate simple resource types into `for_each` patterns (`-help compact`) | `false` |
 | `-compact-include` | `JAMFORMER_COMPACT_INCLUDE` | Space-separated resource types to compact (default: all eligible) | |
 | `-compact-exclude` | `JAMFORMER_COMPACT_EXCLUDE` | Space-separated resource types to exclude from compaction | |
-| `-skip-secret-scan` | `JAMFORMER_SKIP_SECRET_SCAN` | Skip secret scanning of generated output | `false` |
-| `-multi-env` | `JAMFORMER_MULTI_ENV` | Space-separated environment names for multi-env export | |
+| `-split-by-category` | `JAMFORMER_SPLIT_BY_CATEGORY` | Split categorised resource types into per-category output files | `false` |
+| `-skip-secret-scan` | `JAMFORMER_SKIP_SECRET_SCAN` | Skip secret scanning of generated output (`-help secrets`) | `false` |
+| `-multi-env` | `JAMFORMER_MULTI_ENV` | Space-separated environment names for multi-env export (`-help multi-env`) | |
 | `-source-env` | `JAMFORMER_SOURCE_ENV` | Source-of-truth environment (default: first in list) | |
 | `-list-resources` | | List valid resource filter names and exit | |
+| `-credits` | | Show credits and acknowledgements | |
 | `-version` / `-v` | | Print version and exit | |
 
-## Filtering Resources
-
-```bash
-# Only discover specific types
-./jamformer -include-resources "policies scripts categories"
-
-# Exclude specific types
-./jamformer -exclude-resources "packages icons"
-
-# List available filter names
-./jamformer -list-resources
-```
-
-When a referenced type isn't included, references remain as literal IDs rather than Terraform expressions.
-
-## Compact Mode
-
-The `-compact` flag consolidates simple, uniform resource types into `for_each` + `locals` patterns - producing output closer to what you'd write by hand in a production environment. Works across all providers.
-
-```bash
-# Compact all eligible types
-./jamformer -compact
-
-# Only compact specific types
-./jamformer -compact -compact-include "categories departments"
-
-# Compact everything except buildings
-./jamformer -compact -compact-exclude "buildings"
-```
-
-**Before** (default output):
-
-```hcl
-resource "jamfpro_category" "productivity" {
-  name = "Productivity"
-}
-
-resource "jamfpro_category" "security" {
-  name = "Security"
-}
-```
-
-**After** (`-compact`):
-
-```hcl
-locals {
-  categories = {
-    productivity = { name = "Productivity" }
-    security     = { name = "Security" }
-  }
-}
-
-resource "jamfpro_category" "all" {
-  for_each = local.categories
-
-  name = each.value.name
-}
-```
-
-Eligibility is determined dynamically at runtime. A resource type qualifies when:
-
-- The file contains 2+ resource blocks of a single type
-- All blocks share the same set of attribute names
-- No nested blocks (other than `lifecycle`) or nested attributes (structural types)
-- At least one attribute varies across instances (otherwise they're duplicates)
-
-Attributes that are identical across all instances become literals on the resource block; only varying values go in the locals map. Cross-resource references and import blocks are automatically rewritten to use the new addressing (e.g. `jamfpro_category.all["productivity"].id`).
-
-The `-compact-include` and `-compact-exclude` flags accept the output filename stem (e.g. `categories`, `buildings`, `dock_items`) and can be space or comma separated.
+Several flags have extended help built into the CLI — run `./jamformer -help <topic>` (e.g. `-help multi-env`, `-help compact`) for details and examples without leaving your terminal.
 
 ## Output
 
 The tool generates a self-contained Terraform project in the output directory:
 
-- `provider.tf`, `variables.tf`, `terraform.tfvars` - provider configuration (credentials are not written to tfvars for security)
-- Per-type resource files (e.g. `policies.tf`, `scripts.tf`)
-- Per-type import block files (e.g. `policies_import.tf`, `scripts_import.tf`)
-- `support_files/` - extracted scripts, configuration profiles, app configurations, packages, and branding images; `device_enrollment_tokens/` and `volume_purchasing_tokens/` directories are created as the recommended location for token files
-
-Credentials are not written to `terraform.tfvars` for security. Supply them at plan/apply time via `TF_VAR_*` environment variables or Terraform's interactive prompt.
+- `provider.tf`, `variables.tf`, `terraform.tfvars` — provider configuration (credentials are not written to tfvars for security)
+- Per-type resource files — for Jamf Platform, the federated Jamf Pro surface uses a `pro_` prefix (e.g. `pro_policy.tf`, `pro_script.tf`), while native Platform resources keep the plain type name (`blueprints.tf`, `device_groups.tf`); other providers use the plain type name too (e.g. `policies.tf`, `scripts.tf`)
+- Per-type import block files (e.g. `pro_policy_import.tf`, `policies_import.tf`), plus `singletons_import.tf` for singleton settings and, for Jamf Platform, `jamf_connect_import.tf`
+- `support_files/` — extracted scripts, configuration profiles, app configurations, packages, and branding images; `device_enrollment_tokens/` and `volume_purchasing_tokens/` directories are created as the recommended location for token files
 
 The generated `provider.tf` includes a minimum version constraint (`>= X.Y.Z`) based on the provider version that terraform downloaded. Use `-provider-version` to pin an exact version instead.
-
-### OAuth2 Token Lifetime
-
-When using OAuth2 authentication with Jamf Pro, jamformer probes the token endpoint to determine the access token's lifetime. If the token lifetime is shorter than the provider's default refresh buffer period (300 seconds) -common with API integrations configured for short-lived tokens -jamformer automatically sets `token_refresh_buffer_period_seconds` in the generated `provider.tf` to half the token lifetime (minimum 5 seconds). This prevents "token lifetime is shorter than buffer period" errors from the provider SDK during `terraform plan` and `terraform apply`.
 
 ## After Generation
 
@@ -251,226 +174,83 @@ rm *_import.tf     # Remove import blocks (no longer needed)
 
 ## Multi-Environment Support
 
-> **⚠️ Experimental and highly advanced.** This feature is intended for people who are already comfortable with Terraform modules, long-lived branch workflows, and the Jamf provider's resource model. It produces output that is *more* of a scaffold than the single-environment mode, not less — expect to edit the generated module, the per-env roots, and the variables extraction before any of it is usable. Treat it as a research/enablement feature, not a supported production workflow.
+> **⚠️ Experimental and highly advanced.** Intended for people already comfortable with Terraform modules and long-lived branch workflows. It produces output that is *more* of a scaffold than the single-environment mode — expect to edit the generated module, the per-env roots, and the variables extraction before any of it is usable.
 
-For teams managing multiple Jamf environments (dev, staging, prod), jamformer can generate a Terraform project structured for a long-lived branch workflow. The output uses a shared module with per-environment root directories, designed for git branching strategies where each branch represents an environment (e.g. staging -> main promotion).
+`-multi-env "staging prod"` generates a Terraform project structured for a long-lived branch workflow: a shared module plus a per-environment root directory, designed for git branching strategies where each branch represents an environment. A single environment name is also accepted, producing the same module/environment scaffold for one instance.
 
-Multi-env mode supports the **jamfplatform** (default) and **jamfpro** providers. Select with `-provider`; with no `-provider` it follows the global default (jamfplatform). Jamf Protect and JSC are not supported in multi-env mode.
+Supported providers: **jamfplatform** (default) and **jamfpro**. Protect and JSC are not supported in multi-env mode. Credentials use an environment-name suffix (e.g. `JAMF_URL_PROD`, `JAMF_CLIENT_ID_PROD`); see `./jamformer -help multi-env` for the full credential and output-structure reference, and the [guide](https://concepts.jamf.com/en/guides/infrastructure-as-code/adopting-terraform-for-jamf-with-jamformer/) for a walkthrough of the branch promotion workflow.
 
-A single environment is also accepted (`-multi-env prod`) — this produces the same module + `environments/<env>/` scaffold for just one instance, useful for adopting the modular structure before adding more environments.
+## Validation Auto-Fix
 
-**Prerequisites:** Your environments should have matching resource names where possible. Resources are matched across environments by name - duplicate names within a resource type may cause incorrect matching. This feature is designed for environments that are intentionally kept in sync.
+After splitting the generated HCL into per-type files, jamformer runs `terraform validate` in a loop and auto-fixes schema-level errors — removing invalid or conflicting attributes, setting attributes to a value a validator requires, and resolving `null` Required attributes.
 
-### Setup
+A `null` Required attribute is usually a value the API can't give back. **Write-only attributes** (passwords, tokens, and other create-only secrets) are a Terraform schema construct that's never persisted to state and never returned by a provider's Read, so the API has no way to round-trip them — they always import as `null`. jamformer detects these against the provider schema, rewires them to a sensitive Terraform variable, and seeds the paired `_wo_version` rotation attribute so the config still validates. Other Required attributes the API returns as `null` get a sensitive variable too if the schema marks them sensitive, or a type-appropriate zero value (`""`, `false`, `0`) otherwise. Either way, supply real values via `TF_VAR_*` environment variables or `terraform.tfvars` at apply time.
 
-Set per-environment credentials using environment variables with an environment name suffix.
-
-**Jamf Pro** (basic auth or OAuth2; bare instance names expand to `<name>.jamfcloud.com`):
-
-```bash
-export JAMF_URL_STAGING=https://staging.jamfcloud.com
-export JAMF_CLIENT_ID_STAGING=xxx
-export JAMF_CLIENT_SECRET_STAGING=xxx
-
-export JAMF_URL_PROD=https://prod.jamfcloud.com
-export JAMF_CLIENT_ID_PROD=xxx
-export JAMF_CLIENT_SECRET_PROD=xxx
-
-./jamformer -provider jamfpro -multi-env "staging prod"
-```
-
-**Jamf Platform** (OAuth2 only; regional API gateway base URL; tenant ID optional, enabling packages / Jamf Connect / Self Service branding downloads):
-
-```bash
-export JAMF_URL_PROD=https://eu.apigw.jamf.com
-export JAMF_CLIENT_ID_PROD=xxx
-export JAMF_CLIENT_SECRET_PROD=xxx
-export JAMF_TENANT_ID_PROD=xxx          # optional
-
-./jamformer -multi-env "staging prod"   # jamfplatform is the default provider
-```
-
-The first environment listed is the source of truth for resource definitions. Use `-source-env` to override this.
-
-### Output Structure
-
-```
-generated/
-  modules/jamf/              # shared resource definitions
-    policies.tf              # resources in ALL environments
-    scripts.tf
-    policies_staging_only.tf # resources only in staging (delete on prod branch)
-    variables.tf             # module input variables
-    support_files/           # files identical across environments
-      scripts/
-      macos_configuration_profiles/
-  environments/
-    staging/
-      main.tf                # provider config + module call
-      backend.tf             # placeholder - configure your state backend
-      variables.tf           # auth + pass-through variables
-      terraform.tfvars       # environment-specific values
-      imports.tf             # import blocks with module.jamf. prefix
-    prod/
-      main.tf
-      backend.tf
-      variables.tf
-      terraform.tfvars
-      imports.tf
-```
-
-### How It Works
-
-1. Runs discovery and `terraform plan` against each environment independently
-2. Matches resources across environments by name
-3. Generates a module + environment directory structure:
-   - `modules/jamf/` - shared resource definitions with `var.xxx` for differing attributes
-   - Resources only in some environments are separated into `*_<env>_only.tf` files
-   - Support files identical across environments go in the module; divergent files go per-env
-   - Each `environments/<env>/` has its own provider config, backend, variables, tfvars, and imports
-   - Import blocks use `module.jamf.<type>.<label>` addressing
-
-### Branch Workflow
-
-1. Commit the output to a repo and create a long-lived branch per environment (e.g. `staging`, `main` for prod)
-2. On each branch, configure `backend.tf` with your state backend
-3. On each branch, delete `*_<other_env>_only.tf` files from the module (e.g. on `main`, delete `*_staging_only.tf`)
-4. Set up branch protection: `main` only accepts merges from `staging`
-5. Configure CI to run `terraform apply` in `environments/<env>/` when code lands on the corresponding branch
-6. Run initial import per environment: `cd environments/<env> && terraform init && terraform apply`
-
-Feature branches are created from `staging`, merged to `staging` via PR, then promoted to `main` via PR. The shared module merges cleanly because it's identical across branches.
-
-### Limitations
-
-- Only supports the Jamf Pro provider (Protect/Platform coming later)
-- Cannot be combined with `-compact` mode
-- Resources matched by name - duplicate names within a resource type may cause incorrect cross-env matching
-- Requires at least 2 environments
-
-## What the Tool Does
-
-1. **Discovers** resources from the Jamf API (or via `terraform query` for Protect/Platform)
-2. **Generates** Terraform import blocks with sanitised resource labels
-3. **Runs** `terraform plan -generate-config-out` to produce HCL from the provider
-4. **Post-processes** the output:
-   - Rewrites literal Jamf IDs to cross-resource Terraform references
-   - Extracts embedded content (scripts, profiles) to individual files with `file()` references
-   - Generates `file(var.xxx)` path variables for DEP/VPP tokens (download from Apple Business/School Manager)
-   - Resolves icon CDN URLs (no local downloads) with `lifecycle { ignore_changes }` to prevent destroy/create on first apply
-   - Downloads binary assets (packages, branding images)
-   - Strips null optional attributes and removes values that cause drift (e.g. `category_id = -1`)
-   - Splits the monolithic generated file into per-resource-type files
-5. **Validates** the output and auto-fixes schema-level errors (see [Validation Auto-Fix](#validation-auto-fix) below)
-6. **Scans** for secrets using gitleaks with Jamf-specific rules (passwords in HCL, plist XML secrets, LDAP/SMTP/WiFi credentials) and offers to move them to sensitive Terraform variables
-
-### Validation Auto-Fix
-
-After splitting the generated HCL into per-type files, jamformer runs `terraform validate` in a loop and auto-fixes errors using the following strategies:
-
-| Error Pattern | Fix Strategy |
-| --- | --- |
-| "Attribute X ... Remove it" | Remove the attribute |
-| "'attr' must be 'VALUE' when ..." | Set the attribute to the required value |
-| "must be one of [A B], got: X" | Remove the attribute with the invalid value |
-| "conflicts with other_attr" | Remove the conflicting attribute |
-| Required attribute is `null` (sensitive) | Replace with a Terraform variable reference (`var.X`) |
-| Required attribute is `null` (non-sensitive) | Replace with the type-appropriate zero value (`""`, `false`, `0`) |
-
-**Sensitive variables:** Terraform does not include sensitive attribute values in generated configuration -any attribute marked `sensitive` in the provider schema is written as `null` in the generated HCL, regardless of whether the API returned a value. This includes both truly write-only fields (e.g. passwords that the API never returns) and fields the API does return but the provider marks as sensitive (e.g. `admin_username` on computer prestages). Jamformer replaces these with uniquely-named Terraform variable references (e.g. `var.computer_prestage_enrollment_shared_admin_password`) and appends corresponding `variable` blocks to `variables.tf` with `sensitive = true`. You must supply real values for these variables via `TF_VAR_*` environment variables or `terraform.tfvars` at plan/apply time.
-
-**Non-sensitive required nulls:** Some required attributes are returned as `null` by the API import but aren't marked sensitive. These are replaced with the appropriate zero value for their type (empty string for strings, `false` for bools, `0` for numbers) based on the provider schema. This is a safe default that satisfies the schema requirement without creating unnecessary variables.
+Re-run with `-verbose` to see exactly what was changed.
 
 ## Secret Scanning
 
-After generation, jamformer scans the output directory for potential secrets using [gitleaks](https://github.com/gitleaks/gitleaks) (MIT licensed) with additional Jamf-specific detection rules:
-
-- **HCL attributes** -`password`, `secret`, `credential` values in `.tf` files
-- **Plist/XML** -`<key>Password</key><string>...</string>` patterns in app configurations and profiles, including multiline XML where the key and value are on separate lines
-- **Infrastructure credentials** -LDAP bind passwords, SMTP passwords, WiFi/VPN shared secrets
-- **Standard patterns** -Private keys, API tokens, cloud credentials (200+ default gitleaks rules)
-
-When secrets are detected, the report shows the exact resource, attribute, and redacted value. In interactive mode, you choose how to proceed:
-
-- **`[a]ll`** - remediate all findings automatically
-- **`[s]elect individually`** - walk through each finding and choose `[y/N]`
-- **`[N]one`** - skip remediation entirely
-
-Remediation moves secrets to sensitive Terraform variables:
-
-- **For `.tf` files:** if the secret is the entire attribute value, the literal is replaced with `var.<name>`. If the secret is embedded in a larger string (e.g. `parameter8 = "enrollauthtoken=SECRET"`), HCL string interpolation is used instead: `"enrollauthtoken=${var.name}"`. Secrets that can't be replaced are skipped with a warning.
-- **For `support_files/`:** the file is converted to a `.tpl` template, existing `${}` expressions are escaped as `$${}`, and the secret is replaced with a template variable. The `.tf` reference changes from `file()` to `templatefile()`. When multiple secrets exist in the same support file, subsequent findings update the `.tpl` in place and add their variable to the existing `templatefile()` variable map.
-
-After remediation, `terraform fmt` runs automatically for consistent formatting. Provider credential variables (`client_id`, `client_secret`, `password`) are also marked `sensitive = true` in the generated `variables.tf`.
-
-Use `-skip-secret-scan` to disable scanning.
+After generation, jamformer scans the output for secrets using [gitleaks](https://github.com/gitleaks/gitleaks) (MIT licensed) plus Jamf-specific rules (HCL passwords, plist/XML secrets, LDAP/SMTP/WiFi credentials). In interactive mode you choose `[a]ll` to remediate automatically, `[s]elect` to walk through findings individually, or `[N]one` to skip. Remediation moves secrets to sensitive Terraform variables (`.tf` files) or converts affected support files to `.tpl` templates with `templatefile()`. Use `-skip-secret-scan` to disable. Run `./jamformer -help secrets` for the full mechanics.
 
 ## CI / Non-Interactive Usage
 
 jamformer detects non-interactive environments and fails fast if credentials are missing.
 
 ```yaml
-- name: Generate Terraform from Jamf Pro
+- name: Generate Terraform from Jamf Platform
   env:
-    JAMF_URL: ${{ secrets.JAMF_URL }}
+    JAMF_URL: ${{ secrets.JAMF_URL }}              # e.g. https://us.apigw.jamf.com
     JAMF_CLIENT_ID: ${{ secrets.JAMF_CLIENT_ID }}
     JAMF_CLIENT_SECRET: ${{ secrets.JAMF_CLIENT_SECRET }}
+    JAMF_TENANT_ID: ${{ secrets.JAMF_TENANT_ID }}
   run: ./jamformer -skip-package-downloads
 ```
 
 ## Troubleshooting
 
-jamformer does not write persistent log files. All output goes to stdout/stderr. For deeper diagnostics, re-run with `-verbose` to surface the full `terraform` command output instead of the spinner summary.
+jamformer does not write persistent log files. All output goes to stdout/stderr. Re-run with `-verbose` to surface the full `terraform` command output instead of the spinner summary.
 
 ### Authentication failed
 
 Verified at startup before any terraform step runs, so this fails fast.
 
 - Confirm the right environment variables are set for the auth method you intend to use. Basic auth needs `JAMF_USERNAME` and `JAMF_PASSWORD`. OAuth2 needs `JAMF_CLIENT_ID` and `JAMF_CLIENT_SECRET`. Setting credentials for both at once is rejected.
-- Jamf Protect and Jamf Platform accept OAuth2 only; JSC accepts basic auth only. The tool prints a clear error if you mix them with the wrong provider.
-- For OAuth2, the integration must have an active privilege set / role. A client with no privileges will authenticate successfully but fail on the first real call — check the "Jamf Pro API permissions" section above.
-- If the URL is wrong (typo, missing region, or mismatched Protect tenant), you will usually see a network or TLS error rather than an auth error. Double-check it and try again.
+- Jamf Platform and Jamf Protect accept OAuth2 only; JSC accepts basic auth only.
+- Jamf Platform additionally requires `JAMF_TENANT_ID` — jamformer fails fast at startup if it's missing, separately from any auth error (see [Credentials & Permissions](#credentials--permissions)).
+- For OAuth2, the integration must have an active privilege set / role. A client with no privileges will authenticate successfully but fail on the first real call.
+- If the URL is wrong (typo, missing region, or mismatched Protect tenant), you will usually see a network or TLS error rather than an auth error.
 
 ### "Provider couldn't read resource" during `terraform plan -generate-config-out`
 
-The pipeline already handles this automatically: when the provider refuses to read a specific resource, the offending `import {}` block is removed and the step is retried until `terraform plan` succeeds or there is nothing left to retry. Re-run with `-verbose` to see which addresses were dropped.
+Handled automatically: when the provider refuses to read a specific resource, the offending `import {}` block is removed and the step is retried until `terraform plan` succeeds or there is nothing left to retry. Re-run with `-verbose` to see which addresses were dropped.
 
-The most common root cause is missing privileges on the Jamf Pro integration. If a whole resource type is silently absent from the generated output, confirm the integration has `Read` on that object type. If only some resources are dropped, the usual culprit is a provider bug with a specific attribute on that resource — file an issue (see Support below) with the `-verbose` output and the resource address.
+The most common root cause is a missing read privilege. If only some resources of a type are dropped, the usual culprit is a provider bug with a specific attribute — file an issue (see Support below) with the `-verbose` output and the resource address.
 
 ### Token refresh errors / short-lived OAuth2 tokens
 
-The tool probes `/api/oauth/token` at startup to determine your integration's `expires_in`, then sets `TokenRefreshBufferPeriod` to roughly half the lifetime and writes `token_refresh_buffer_period_seconds` into the generated `provider.tf`.
-
-If you rotate or replace the API integration after generation and the new token lifetime differs from the old one, edit `token_refresh_buffer_period_seconds` in `provider.tf` (set it to roughly half of the new `expires_in`). If you remove the attribute entirely, the provider falls back to its own default (300s), which may be longer than the new token's lifetime and cause auth failures during apply.
+jamformer probes `/api/oauth/token` at startup to determine your integration's `expires_in`, then writes `token_refresh_buffer_period_seconds` into the generated `provider.tf`. If you rotate the API integration after generation and the new token lifetime differs, update that value manually (roughly half the new `expires_in`).
 
 ### Spinner shows nothing for a long time
 
-Resource listings for very large instances (thousands of policies / icons / profiles) can take minutes. `-verbose` shows the underlying `terraform` commands so you can see progress. `-parallelism N` increases concurrent provider reads during generation.
+Large instances (thousands of policies / icons / profiles) can take minutes to list. `-verbose` shows the underlying `terraform` commands. `-parallelism N` increases concurrent provider reads during generation.
 
-### `terraform query` / Terraform 1.14 errors (Protect, Platform)
+### `terraform query` / Terraform 1.14 errors (Platform, Protect)
 
-Protect and Platform use `terraform query`, which requires Terraform 1.14 or later. jamformer auto-downloads a compatible version. If you pinned a pre-1.14 binary with `-terraform-path`, remove the flag or upgrade the pinned binary.
+Platform and Protect use `terraform query`, which requires Terraform 1.14+. jamformer auto-downloads a compatible version; if you pinned a pre-1.14 binary with `-terraform-path`, remove the flag or upgrade it.
 
 ## Support
 
 - **Issues and feature requests:** [https://github.com/Jamf-Concepts/jamformer/issues](https://github.com/Jamf-Concepts/jamformer/issues). Include the provider, the command you ran (redacted), the `-verbose` output, and the jamformer version (`jamformer -version`).
 - **Questions and discussion:** `#jamformer` on the [MacAdmins Slack](https://macadmins.org/).
+- **Step-by-step how-to:** the [guide](https://concepts.jamf.com/en/guides/infrastructure-as-code/adopting-terraform-for-jamf-with-jamformer/).
 
 ## Known Limitations
 
-- **Not production-ready output** - The generated HCL is a starting point that will likely need review and refinement before managing real infrastructure.
-- **Provider drift** - Some attributes may show as changes on `terraform plan` after import due to provider SDK defaults that don't round-trip. These are provider issues, not jamformer issues.
-- **Icon discovery (Jamf Pro)** - Icons are discovered by scanning policies, profiles, and apps individually (no "list all icons" API). This adds API calls proportional to the number of policies + profiles + apps. Icons are referenced via CDN URL (`icon_file_web_source`) rather than downloaded locally, and include `lifecycle { ignore_changes }` to prevent destroy/create on first apply. Icon resource labels match the referencing resource (e.g. `jamfpro_icon.install_chrome` for `jamfpro_policy.install_chrome`).
-- **Icon synthesis (Jamf Platform)** - `jamfplatform_pro_icon` has no list resource, so icons are synthesised from the `self_service_icon` references hydrated onto policies: one `jamfplatform_pro_icon` resource per unique icon with `icon_file_source` set to the icon's CDN URL (the provider downloads and re-uploads it) plus `lifecycle { ignore_changes = [icon_file_source] }`. Each policy's `self_service_icon.id` is rewritten to reference the new resource and the server-computed `uri`/`filename` echoes are dropped. Labels derive from the icon filename.
-- **Jamf Connect discovery (Jamf Platform)** - `jamfplatform_pro_jamf_connect` has no list resource (it adopts an existing macOS configuration profile carrying a Jamf Connect payload), so it is discovered via the federated Jamf Platform `pro` SDK and materialised through import blocks (requires `JAMF_TENANT_ID`). Its `profile_id` is rewritten to reference the matching `jamfplatform_pro_macos_configuration_profile` (wrapped in `tonumber()` because `profile_id` is numeric but the profile's `id` is a string). Labels derive from the linked profile name.
-- **Smart-group criteria references (Jamf Platform)** - Device-group and user-group "member of" criteria are resolved to references: a device-group "Computer Group"/"Mobile Device Group" criterion targets another group by **name** (→ `jamfplatform_device_group.<name>.name`, scoped to the matching device type), and a user-group "User Group" criterion is matched by **id** (Jamf 11.29 returns the id rather than the name on read) but resolved to the group's **name** (→ `jamfplatform_pro_user_group.<name>.name`), which is the form the provider expects on write. An extension-attribute name used as a device-group criterion field is resolved to the EA's `.name` (scoped to the group's device type). Built-in criteria (e.g. "Application Bundle ID") are left untouched.
-- **Blueprint activation conditions (Jamf Platform)** - A blueprint's `activation_conditions` is a free-form expression that can embed device-group Platform UUIDs in quoted-literal sets (e.g. `ANY @property(jamf.device.groups) IN {'<uuid>'}`). jamformer rewrites each device-group UUID it can resolve to a `${jamfplatform_device_group.<name>.id}` interpolation so the condition tracks the group it points at; the rest of the expression (and any UUIDs it can't resolve) is left untouched.
-- **Branding image synthesis (Jamf Platform)** - `jamfplatform_pro_self_service_branding_image` has no list resource. Its ids are recovered from the Self Service branding singletons (`self_service_branding_macos.icon_id` / `banner_image_id`, `self_service_branding_ios.icon_id`); each image is downloaded via the federated `pro` SDK to `support_files/branding_images/` (requires `JAMF_TENANT_ID`), synthesised as a resource with `image_file_source` set to the local path plus `lifecycle { ignore_changes = [image_file_source] }`, and the singleton references are rewritten to it (wrapped in `tonumber()`, as the id attributes are numeric).
-- **PPD and provisioning-profile extraction (Jamf Platform)** - `jamfplatform_pro_printer.ppd_contents` (PPD driver descriptor) and `jamfplatform_pro_mobile_device_provisioning_profile.profile_data` (signed `.mobileprovision`) are extracted to `support_files/printers/` and `support_files/mobile_device_provisioning_profiles/` respectively and referenced via `file()`, alongside scripts, configuration profiles, and app configurations.
-- **Package downloads** - For Jamf Pro, packages are downloaded from the Cloud Distribution Point by default. For Jamf Platform, packages resident in the Jamf Cloud Distribution Service (JCDS) are downloaded by default when `JAMF_TENANT_ID` is set (JCDS is tenant-scoped); catalog packages whose bytes live elsewhere are kept as metadata + server-supplied hashes. Use `-skip-package-downloads` to skip in both cases.
-- **Blueprint drafts (Jamf Platform)** - A blueprint with no device groups is a non-creatable UI draft (`POST /blueprints` rejects an empty scope). jamformer skips these on export with a warning, since they would otherwise fail `terraform validate`.
-- **API role privilege validation (Jamf Platform)** - The provider validates each `jamfplatform_pro_api_role` privilege against the instance's current assignable-privilege catalog (sourced live from the instance) and rejects unknown values; a role can still hold privileges that have since been removed/renamed in the instance (e.g. for features no longer enabled), which Jamf Pro would also reject on apply. jamformer fetches the same catalog via the federated `pro` SDK (requires `JAMF_TENANT_ID`) and drops privileges not in it from the generated `api_role` resources, warning per role with the exact privileges removed.
-- **Compliance-benchmark artifact stripping (Jamf Platform)** - A compliance benchmark (`jamfplatform_cbengine_benchmark`) generates and continuously reconciles a fleet of supporting resources — policies, configuration profiles, computer extension attributes, smart device groups, scripts, and a category. jamformer keeps the benchmark resource and strips its derived artifacts (which would otherwise double-manage state the benchmark owns and drift on every benchmark update). An artifact is identified by a category whose name matches a benchmark title (and any policy/profile/script assigned to that category), or by a computer EA / device group / policy / profile whose name begins with `<benchmark title> - ` (e.g. `CIS v8 - Failed Result List`).
-- **Terraform 1.14+** - Jamf Protect and Platform require Terraform 1.14+ for `terraform query` support.
-- **OAuth2 short-lived tokens** - API integrations with very short token lifetimes (under 60 seconds) are supported via automatic token lifetime probing. The generated `provider.tf` includes `token_refresh_buffer_period_seconds` when needed. If you change API integrations after generation, you may need to update this value.
-- **JSC auth** - JSC requires a local account or Jamf ID. SSO/SAML authentication is not supported.
+- **Not production-ready output** — The generated HCL is a starting point that will likely need review and refinement before managing real infrastructure.
+- **Provider drift** — Some attributes may show as changes on `terraform plan` after import due to provider SDK defaults that don't round-trip. These are provider issues, not jamformer issues.
+- **Icons are not downloaded locally** — Referenced via CDN URL with `lifecycle { ignore_changes }` to prevent destroy/create on first apply, across all providers that support icons.
+- **Package downloads are best-effort** — Jamf Platform downloads only packages resident in the Jamf Cloud Distribution Service (JCDS); catalog packages whose bytes live elsewhere stay as metadata + server-supplied hashes. Jamf Pro downloads from the Cloud Distribution Point by default. Use `-skip-package-downloads` to skip in both cases.
+- **Terraform 1.14+ required for Platform and Protect** — both use `terraform query` for discovery.
+- **JSC auth** — requires a local account or Jamf ID; SSO/SAML is not supported.
+
+For the many Jamf Platform–specific synthesis and reference-resolution behaviors (icons, Jamf Connect, branding images, blueprint conditions, smart-group criteria, compliance-benchmark artifact stripping, and more), see the [guide](https://concepts.jamf.com/en/guides/infrastructure-as-code/adopting-terraform-for-jamf-with-jamformer/) or the code comments in `platform/`.
