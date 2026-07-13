@@ -10,7 +10,7 @@ require (
 	github.com/hashicorp/hc-install v0.9.5
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/hashicorp/terraform-exec v0.25.2
-	github.com/hashicorp/terraform-json v0.27.2
+	github.com/hashicorp/terraform-json v0.28.0
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.18.1
 	github.com/zricethezav/gitleaks/v8 v8.30.1
