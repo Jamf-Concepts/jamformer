@@ -14,7 +14,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.18.1
 	github.com/zricethezav/gitleaks/v8 v8.30.1
-	golang.org/x/term v0.44.0
+	golang.org/x/term v0.45.0
 )
 
 require (
@@ -118,7 +118,7 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
