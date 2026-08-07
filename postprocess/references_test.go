@@ -11,6 +11,7 @@ import (
 	"github.com/Jamf-Concepts/jamformer/protect"
 	"github.com/Jamf-Concepts/jamformer/registry"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
@@ -1555,6 +1556,57 @@ func TestProtectUnifiedLoggingFilterSetEmptyFilters(t *testing.T) {
 	}
 	if strings.Contains(result, "TODO: unresolved reference") {
 		t.Errorf("Empty filters list should not produce an unresolved-reference TODO, got:\n%s", result)
+	}
+}
+
+// TestUnresolvedListLiteralsStayValidHCL covers an unresolvable ID inside a list
+// attribute. A string element must be re-quoted (a bare UUID parses as an
+// identifier and makes the file invalid HCL), while a numeric element must stay
+// bare so a number-typed list keeps its element type.
+func TestUnresolvedListLiteralsStayValidHCL(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+
+	// String IDs: the member filters were never discovered, so neither resolves.
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Endpoint Diagnostics"
+  filters = ["4c8552c0-8347-43fb-b74b-eda602d02e15", "ulf-111"]
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, `"4c8552c0-8347-43fb-b74b-eda602d02e15", # TODO: unresolved reference`) {
+		t.Errorf("expected unresolved string element re-quoted, got:\n%s", result)
+	}
+	// The resolvable one still becomes a reference.
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.time_machine.id") {
+		t.Errorf("expected resolvable element rewritten, got:\n%s", result)
+	}
+	// The whole file must still parse.
+	if _, diags := hclwrite.ParseConfig([]byte(result), "test.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL does not parse: %s\n%s", diags.Error(), result)
+	}
+	if _, diags := hclsyntax.ParseConfig([]byte(result), "test.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL is not valid syntax: %s\n%s", diags.Error(), result)
+	}
+
+	// Numeric IDs must not gain quotes.
+	numSrc := `resource "jamfprotect_user" "test" {
+  email    = "test@example.com"
+  role_ids = [999]
+}`
+	nf := parseHCLRef(t, numSrc)
+	nbody := refBlockBody(t, nf)
+	applyRules(nbody, "jamfprotect_user", rules, reg)
+	numResult := string(nf.Bytes())
+
+	if !strings.Contains(numResult, "999, # TODO: unresolved reference") {
+		t.Errorf("expected unresolved numeric element left bare, got:\n%s", numResult)
+	}
+	if strings.Contains(numResult, `"999"`) {
+		t.Errorf("numeric element must not be quoted, got:\n%s", numResult)
 	}
 }
 
