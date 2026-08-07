@@ -26,6 +26,7 @@ var Resources = []ResourceDef{
 	{FilterKey: "action_configurations", DisplayName: "Action Configurations", TFType: "jamfprotect_action_configuration", OutputFile: "action_configurations.tf"},
 	{FilterKey: "telemetry", DisplayName: "Telemetry", TFType: "jamfprotect_telemetry", OutputFile: "telemetry.tf"},
 	{FilterKey: "unified_logging_filters", DisplayName: "Unified Logging Filters", TFType: "jamfprotect_unified_logging_filter", OutputFile: "unified_logging_filters.tf"},
+	{FilterKey: "unified_logging_filter_sets", DisplayName: "Unified Logging Filter Sets", TFType: "jamfprotect_unified_logging_filter_set", OutputFile: "unified_logging_filter_sets.tf"},
 	{FilterKey: "custom_prevent_lists", DisplayName: "Custom Prevent Lists", TFType: "jamfprotect_custom_prevent_list", OutputFile: "custom_prevent_lists.tf"},
 	{FilterKey: "removable_storage_control_sets", DisplayName: "Removable Storage Control Sets", TFType: "jamfprotect_removable_storage_control_set", OutputFile: "removable_storage_control_sets.tf"},
 	{FilterKey: "plans", DisplayName: "Plans", TFType: "jamfprotect_plan", OutputFile: "plans.tf"},
@@ -96,6 +97,14 @@ func DefaultRules() []postprocess.ReferenceRule {
 			TargetAttr:   "id",
 			IsList:       true,
 		},
+		// Unified Logging Filter Set -> Unified Logging Filter references
+		{
+			ResourceType: "jamfprotect_unified_logging_filter_set",
+			AttrName:     "filters",
+			TargetTypes:  []string{"jamfprotect_unified_logging_filter"},
+			TargetAttr:   "id",
+			IsList:       true,
+		},
 		// Plan -> Action Configuration reference
 		{
 			ResourceType: "jamfprotect_plan",
@@ -130,6 +139,14 @@ func DefaultRules() []postprocess.ReferenceRule {
 			ResourceType: "jamfprotect_plan",
 			AttrName:     "analytic_sets",
 			TargetTypes:  []string{"jamfprotect_analytic_set"},
+			TargetAttr:   "id",
+			IsList:       true,
+		},
+		// Plan -> Unified Logging Filter Set references
+		{
+			ResourceType: "jamfprotect_plan",
+			AttrName:     "unified_logging_filter_sets",
+			TargetTypes:  []string{"jamfprotect_unified_logging_filter_set"},
 			TargetAttr:   "id",
 			IsList:       true,
 		},

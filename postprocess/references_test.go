@@ -1399,6 +1399,9 @@ func setupProtectRegistry() *registry.Registry {
 	reg.Register("jamfprotect_exception_set", "def-456", "jamfprotect_exception_set.trusted_apps")
 	reg.Register("jamfprotect_telemetry", "tel-789", "jamfprotect_telemetry.default_telemetry")
 	reg.Register("jamfprotect_removable_storage_control_set", "rsc-012", "jamfprotect_removable_storage_control_set.block_usb")
+	reg.Register("jamfprotect_unified_logging_filter", "ulf-111", "jamfprotect_unified_logging_filter.time_machine")
+	reg.Register("jamfprotect_unified_logging_filter", "ulf-222", "jamfprotect_unified_logging_filter.screen_sharing")
+	reg.Register("jamfprotect_unified_logging_filter_set", "ulfs-333", "jamfprotect_unified_logging_filter_set.endpoint_diagnostics")
 	return reg
 }
 
@@ -1513,6 +1516,48 @@ func TestProtectAnalyticSetManagedAnalyticReference(t *testing.T) {
 	}
 }
 
+func TestProtectUnifiedLoggingFilterSetFiltersReference(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Endpoint Diagnostics"
+  filters = ["ulf-111", "ulf-222"]
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.time_machine.id") {
+		t.Errorf("Expected filters to reference time_machine, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.screen_sharing.id") {
+		t.Errorf("Expected filters to reference screen_sharing, got:\n%s", result)
+	}
+}
+
+// TestProtectUnifiedLoggingFilterSetEmptyFilters covers a filter set with no
+// members — valid per the provider schema, and must survive rewriting untouched.
+func TestProtectUnifiedLoggingFilterSetEmptyFilters(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Placeholder Set"
+  filters = []
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, "filters = []") {
+		t.Errorf("Expected empty filters list preserved, got:\n%s", result)
+	}
+	if strings.Contains(result, "TODO: unresolved reference") {
+		t.Errorf("Empty filters list should not produce an unresolved-reference TODO, got:\n%s", result)
+	}
+}
+
 func TestProtectPlanReferences(t *testing.T) {
 	reg := setupProtectRegistry()
 	rules := protect.DefaultRules()
@@ -1523,6 +1568,7 @@ func TestProtectPlanReferences(t *testing.T) {
   telemetry                    = "tel-789"
   removable_storage_control_set = "rsc-012"
   analytic_sets                = ["79e0a2a0-3af2-4e0b-8148-1f9c129bfd85"]
+  unified_logging_filter_sets  = ["ulfs-333"]
 }`
 	f := parseHCLRef(t, src)
 	body := refBlockBody(t, f)
@@ -1543,6 +1589,9 @@ func TestProtectPlanReferences(t *testing.T) {
 	}
 	if !strings.Contains(result, "jamfprotect_analytic_set.default.id") {
 		t.Errorf("Expected analytic_sets to reference default, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter_set.endpoint_diagnostics.id") {
+		t.Errorf("Expected unified_logging_filter_sets to reference endpoint_diagnostics, got:\n%s", result)
 	}
 }
 

@@ -30,6 +30,7 @@ var listableResourceTypes = map[string]string{
 	"roles":                          "jamfprotect_role",
 	"telemetry":                      "jamfprotect_telemetry",
 	"unified_logging_filters":        "jamfprotect_unified_logging_filter",
+	"unified_logging_filter_sets":    "jamfprotect_unified_logging_filter_set",
 	"users":                          "jamfprotect_user",
 }
 
