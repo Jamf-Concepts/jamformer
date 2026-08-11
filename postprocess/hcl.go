@@ -3,6 +3,7 @@
 package postprocess
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -45,21 +46,50 @@ func tokensStringValue(tokens hclwrite.Tokens) string {
 // extractListValues extracts string or numeric values from a list expression,
 // preserving a leading unary minus on negative numbers (see tokensStringValue).
 func extractListValues(attr *hclwrite.Attribute) []string {
+	literals := extractListLiterals(attr)
+	values := make([]string, len(literals))
+	for i, l := range literals {
+		values[i] = l.Val
+	}
+	return values
+}
+
+// listLiteral is one element of a list expression, retaining whether the source
+// literal was quoted. An unresolved element has to be re-emitted with its
+// original literal kind: quoting a number would change the element type of a
+// number-typed list, and leaving a string bare produces invalid HCL.
+type listLiteral struct {
+	Val    string
+	Quoted bool
+}
+
+// extractListLiterals extracts the elements of a list expression along with the
+// kind of literal each one was.
+func extractListLiterals(attr *hclwrite.Attribute) []listLiteral {
 	tokens := attr.Expr().BuildTokens(nil)
-	var values []string
+	var values []listLiteral
 	for i, tok := range tokens {
 		switch tok.Type {
 		case hclsyntax.TokenQuotedLit:
-			values = append(values, string(tok.Bytes))
+			values = append(values, listLiteral{Val: string(tok.Bytes), Quoted: true})
 		case hclsyntax.TokenNumberLit:
 			if i > 0 && tokens[i-1].Type == hclsyntax.TokenMinus {
-				values = append(values, "-"+string(tok.Bytes))
+				values = append(values, listLiteral{Val: "-" + string(tok.Bytes)})
 			} else {
-				values = append(values, string(tok.Bytes))
+				values = append(values, listLiteral{Val: string(tok.Bytes)})
 			}
 		}
 	}
 	return values
+}
+
+// unresolvedListLiteral renders an unresolved list element, preserving the
+// original literal kind so the result stays valid, correctly-typed HCL.
+func unresolvedListLiteral(l listLiteral) string {
+	if l.Quoted {
+		return fmt.Sprintf("%q", l.Val)
+	}
+	return l.Val
 }
 
 // referenceTokens creates HCL tokens for a resource attribute reference like

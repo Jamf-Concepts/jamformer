@@ -21,6 +21,7 @@ func TestProtectTypeToFileMap(t *testing.T) {
 		"jamfprotect_role",
 		"jamfprotect_telemetry",
 		"jamfprotect_unified_logging_filter",
+		"jamfprotect_unified_logging_filter_set",
 		"jamfprotect_user",
 		"jamfprotect_change_management",
 		"jamfprotect_data_forwarding",
@@ -64,11 +65,64 @@ func TestProtectDefaultRulesCount(t *testing.T) {
 		"jamfprotect_user",
 		"jamfprotect_api_client",
 		"jamfprotect_analytic_set",
+		"jamfprotect_unified_logging_filter_set",
 		"jamfprotect_plan",
 	}
 	for _, rt := range expected {
 		if !ruleTypes[rt] {
 			t.Errorf("expected DefaultRules to include rules for %q", rt)
+		}
+	}
+}
+
+// TestProtectDefaultRulesHaveValidTypes verifies every rule's source and target
+// resource types are types the Protect pipeline actually knows about, so a typo
+// in a rule fails here rather than silently never matching.
+func TestProtectDefaultRulesHaveValidTypes(t *testing.T) {
+	knownTypes := TypeToFileMap()
+	for _, rule := range DefaultRules() {
+		if _, ok := knownTypes[rule.ResourceType]; !ok {
+			t.Errorf("rule references unknown source type: %q", rule.ResourceType)
+		}
+		for _, tt := range rule.TargetTypes {
+			if _, ok := knownTypes[tt]; !ok {
+				t.Errorf("rule for %s.%s references unknown target type: %q", rule.ResourceType, rule.AttrName, tt)
+			}
+		}
+	}
+}
+
+// TestProtectListableAndSingletonTypesAreDefined verifies every resource type the
+// query/singleton tables reference has a Resources entry (and therefore an output
+// file), so a new listable type can't be discovered into a file that doesn't exist.
+func TestProtectListableAndSingletonTypesAreDefined(t *testing.T) {
+	knownTypes := TypeToFileMap()
+	filterKeys := ValidFilterNames()
+
+	for filterKey, resourceType := range listableResourceTypes {
+		if _, ok := knownTypes[resourceType]; !ok {
+			t.Errorf("listable type %q (%s) has no Resources entry", resourceType, filterKey)
+		}
+		if _, ok := filterKeys[filterKey]; !ok {
+			t.Errorf("listable filter key %q has no Resources entry", filterKey)
+		}
+	}
+
+	for filterKey, singleton := range singletonResources {
+		if _, ok := knownTypes[singleton.ResourceType]; !ok {
+			t.Errorf("singleton type %q (%s) has no Resources entry", singleton.ResourceType, filterKey)
+		}
+		if _, ok := filterKeys[filterKey]; !ok {
+			t.Errorf("singleton filter key %q has no Resources entry", filterKey)
+		}
+	}
+
+	// Every Resources entry must be reachable as either listable or singleton.
+	for _, r := range Resources {
+		_, listable := listableResourceTypes[r.FilterKey]
+		_, singleton := singletonResources[r.FilterKey]
+		if !listable && !singleton {
+			t.Errorf("Resources entry %q (%s) is neither listable nor a singleton", r.FilterKey, r.TFType)
 		}
 	}
 }

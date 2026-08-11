@@ -11,6 +11,7 @@ import (
 	"github.com/Jamf-Concepts/jamformer/protect"
 	"github.com/Jamf-Concepts/jamformer/registry"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
@@ -1399,6 +1400,9 @@ func setupProtectRegistry() *registry.Registry {
 	reg.Register("jamfprotect_exception_set", "def-456", "jamfprotect_exception_set.trusted_apps")
 	reg.Register("jamfprotect_telemetry", "tel-789", "jamfprotect_telemetry.default_telemetry")
 	reg.Register("jamfprotect_removable_storage_control_set", "rsc-012", "jamfprotect_removable_storage_control_set.block_usb")
+	reg.Register("jamfprotect_unified_logging_filter", "ulf-111", "jamfprotect_unified_logging_filter.time_machine")
+	reg.Register("jamfprotect_unified_logging_filter", "ulf-222", "jamfprotect_unified_logging_filter.screen_sharing")
+	reg.Register("jamfprotect_unified_logging_filter_set", "ulfs-333", "jamfprotect_unified_logging_filter_set.endpoint_diagnostics")
 	return reg
 }
 
@@ -1513,6 +1517,99 @@ func TestProtectAnalyticSetManagedAnalyticReference(t *testing.T) {
 	}
 }
 
+func TestProtectUnifiedLoggingFilterSetFiltersReference(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Endpoint Diagnostics"
+  filters = ["ulf-111", "ulf-222"]
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.time_machine.id") {
+		t.Errorf("Expected filters to reference time_machine, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.screen_sharing.id") {
+		t.Errorf("Expected filters to reference screen_sharing, got:\n%s", result)
+	}
+}
+
+// TestProtectUnifiedLoggingFilterSetEmptyFilters covers a filter set with no
+// members — valid per the provider schema, and must survive rewriting untouched.
+func TestProtectUnifiedLoggingFilterSetEmptyFilters(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Placeholder Set"
+  filters = []
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, "filters = []") {
+		t.Errorf("Expected empty filters list preserved, got:\n%s", result)
+	}
+	if strings.Contains(result, "TODO: unresolved reference") {
+		t.Errorf("Empty filters list should not produce an unresolved-reference TODO, got:\n%s", result)
+	}
+}
+
+// TestUnresolvedListLiteralsStayValidHCL covers an unresolvable ID inside a list
+// attribute. A string element must be re-quoted (a bare UUID parses as an
+// identifier and makes the file invalid HCL), while a numeric element must stay
+// bare so a number-typed list keeps its element type.
+func TestUnresolvedListLiteralsStayValidHCL(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+
+	// String IDs: the member filters were never discovered, so neither resolves.
+	src := `resource "jamfprotect_unified_logging_filter_set" "test" {
+  name    = "Endpoint Diagnostics"
+  filters = ["4c8552c0-8347-43fb-b74b-eda602d02e15", "ulf-111"]
+}`
+	f := parseHCLRef(t, src)
+	body := refBlockBody(t, f)
+	applyRules(body, "jamfprotect_unified_logging_filter_set", rules, reg)
+	result := string(f.Bytes())
+
+	if !strings.Contains(result, `"4c8552c0-8347-43fb-b74b-eda602d02e15", # TODO: unresolved reference`) {
+		t.Errorf("expected unresolved string element re-quoted, got:\n%s", result)
+	}
+	// The resolvable one still becomes a reference.
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter.time_machine.id") {
+		t.Errorf("expected resolvable element rewritten, got:\n%s", result)
+	}
+	// The whole file must still parse.
+	if _, diags := hclwrite.ParseConfig([]byte(result), "test.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL does not parse: %s\n%s", diags.Error(), result)
+	}
+	if _, diags := hclsyntax.ParseConfig([]byte(result), "test.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL is not valid syntax: %s\n%s", diags.Error(), result)
+	}
+
+	// Numeric IDs must not gain quotes.
+	numSrc := `resource "jamfprotect_user" "test" {
+  email    = "test@example.com"
+  role_ids = [999]
+}`
+	nf := parseHCLRef(t, numSrc)
+	nbody := refBlockBody(t, nf)
+	applyRules(nbody, "jamfprotect_user", rules, reg)
+	numResult := string(nf.Bytes())
+
+	if !strings.Contains(numResult, "999, # TODO: unresolved reference") {
+		t.Errorf("expected unresolved numeric element left bare, got:\n%s", numResult)
+	}
+	if strings.Contains(numResult, `"999"`) {
+		t.Errorf("numeric element must not be quoted, got:\n%s", numResult)
+	}
+}
+
 func TestProtectPlanReferences(t *testing.T) {
 	reg := setupProtectRegistry()
 	rules := protect.DefaultRules()
@@ -1523,6 +1620,7 @@ func TestProtectPlanReferences(t *testing.T) {
   telemetry                    = "tel-789"
   removable_storage_control_set = "rsc-012"
   analytic_sets                = ["79e0a2a0-3af2-4e0b-8148-1f9c129bfd85"]
+  unified_logging_filter_sets  = ["ulfs-333"]
 }`
 	f := parseHCLRef(t, src)
 	body := refBlockBody(t, f)
@@ -1543,6 +1641,9 @@ func TestProtectPlanReferences(t *testing.T) {
 	}
 	if !strings.Contains(result, "jamfprotect_analytic_set.default.id") {
 		t.Errorf("Expected analytic_sets to reference default, got:\n%s", result)
+	}
+	if !strings.Contains(result, "jamfprotect_unified_logging_filter_set.endpoint_diagnostics.id") {
+		t.Errorf("Expected unified_logging_filter_sets to reference endpoint_diagnostics, got:\n%s", result)
 	}
 }
 

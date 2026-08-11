@@ -249,7 +249,7 @@ func rewriteListAttribute(body *hclwrite.Body, rule ReferenceRule, reg *registry
 		return false
 	}
 
-	values := extractListValues(attr)
+	values := extractListLiterals(attr)
 	if len(values) == 0 {
 		return false
 	}
@@ -258,7 +258,8 @@ func rewriteListAttribute(body *hclwrite.Body, rule ReferenceRule, reg *registry
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")})
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
 
-	for _, val := range values {
+	for _, literal := range values {
+		val := literal.Val
 		resolved := false
 		// Preserve "none" sentinels verbatim (never a real reference).
 		if isSentinelID(val) {
@@ -276,8 +277,10 @@ func rewriteListAttribute(body *hclwrite.Body, rule ReferenceRule, reg *registry
 			}
 		}
 		if !resolved {
-			// Keep as literal with TODO comment
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: fmt.Appendf(nil, "    %s, # TODO: unresolved reference", val)})
+			// Keep as literal with TODO comment, re-quoting a string element so
+			// the list stays valid HCL (a bare UUID parses as an identifier and
+			// trips "Missing item separator").
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: fmt.Appendf(nil, "    %s, # TODO: unresolved reference", unresolvedListLiteral(literal))})
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
 		}
 	}
