@@ -1,9 +1,9 @@
 module github.com/Jamf-Concepts/jamformer
 
-go 1.26.5
+go 1.26.6
 
 require (
-	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.15.0
+	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.16.1
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.8.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.53.0
 	github.com/hashicorp/go-version v1.9.0
