@@ -188,6 +188,29 @@ func (ps *ProviderSchema) requiredTopLevelAttrs(resourceType string) map[string]
 	return paths[""]
 }
 
+// isRequired reports whether the schema marks the attribute Required. Used to
+// stop the validation auto-fix removing an attribute the provider insists on:
+// removing one trades a value error for a missing-argument error, and can
+// oscillate against the handler that adds it back.
+func (ps *ProviderSchema) isRequired(resourceType, blockPath, attrName string) bool {
+	if ps == nil {
+		return false
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return false
+	}
+	attrs, ok := paths[blockPath]
+	if !ok {
+		return false
+	}
+	info, ok := attrs[attrName]
+	if !ok {
+		return false
+	}
+	return info.Required
+}
+
 // zeroValue returns the cty zero value for the attribute's type.
 // Falls back to cty.StringVal("") if the type is unknown.
 func (ps *ProviderSchema) zeroValue(resourceType, blockPath, attrName string) cty.Value {

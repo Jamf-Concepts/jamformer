@@ -242,7 +242,7 @@ func (c *PlatformCredentials) scopeAttr() (providerLine, varBlock, tfvarsLine st
 		return "\n  environment_id = var.jamfplatform_environment_id",
 			`
 variable "jamfplatform_environment_id" {
-  description = "Jamf Platform environment ID — the "Platform environment" this API integration targets"
+  description = "Jamf Platform environment ID — the Platform environment this API integration targets"
   type        = string
 }
 `,

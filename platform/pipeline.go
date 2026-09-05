@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,7 +113,11 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
 		}
 		for _, v := range fixResult.RequiredVars {
-			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
+			kind := "sensitive, value required"
+			if v.NotSensitive {
+				kind = "value required"
+			}
+			logStep("  ⚠ %s: replaced null with var.%s (%s)", v.Resource, v.VarName, kind)
 		}
 	}
 
@@ -230,7 +235,17 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	queryErr := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, platformEnv)
 	terraform.QueryProgressFunc = nil
 	if queryErr != nil {
-		return nil, fmt.Errorf("terraform query: %w", queryErr)
+		// A partial query still produced usable configuration; the resources
+		// its plan phase rejected are repaired during post-processing (and,
+		// for the App Installer case below, before it). Anything else is fatal.
+		var partial *terraform.PartialQueryError
+		if !errors.As(queryErr, &partial) {
+			return nil, fmt.Errorf("terraform query: %w", queryErr)
+		}
+		logStep("  Some resources did not plan as generated; repairing during post-processing")
+		if opts.Verbose {
+			fmt.Println(partial.Diagnostics)
+		}
 	}
 
 	// terraform query never creates generatedFile when every selected list
@@ -240,6 +255,26 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	if _, statErr := os.Stat(generatedFile); os.IsNotExist(statErr) {
 		if err := os.WriteFile(generatedFile, nil, 0644); err != nil {
 			return nil, fmt.Errorf("creating empty generated file: %w", err)
+		}
+	}
+
+	// 3a. Fill in App Installer titles the provider read back as null.
+	//
+	// jamfplatform_pro_app_installer marks app_title_name Required but its list
+	// resource returns null for it, so the generated block cannot plan and the
+	// query above exits non-zero. This must run before the singleton plan,
+	// which would otherwise fail on the same blocks. Resolving the title
+	// against the App Installers catalogue needs the federated pro surface, so
+	// organization scope skips it — and reaches no App Installers either.
+	aiSelected := opts.SelectedResources == nil || opts.SelectedResources["app_installer"]
+	if aiSelected && opts.Scope.ReachesPro() {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
+		if n, aiErr := HydrateAppInstallerTitles(terraform.Ctx, pc, generatedFile, eventsFile); aiErr != nil {
+			if !opts.Quiet {
+				fmt.Printf("  Warning: could not resolve App Installer titles: %v\n", aiErr)
+			}
+		} else if n > 0 {
+			logStep("  Resolved %d App Installer title(s) the provider returned as null", n)
 		}
 	}
 

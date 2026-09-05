@@ -372,6 +372,33 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			continue
 		}
 
+		// Skip a cloud identity provider whose credentials block the provider
+		// did not return. provider_name is a discriminator that requires the
+		// matching nested block (entra_id for ENTRA_ID, google for GOOGLE), and
+		// the list resource hydrates neither — it returns display_name and
+		// provider_name alone. The block holds the directory's client
+		// credentials, which no read exposes, so there is nothing to recover
+		// and nothing to invent. Dropping it keeps the export plannable, the
+		// same call the blueprint-draft skip above makes.
+		if resourceType == "jamfplatform_pro_cloud_identity_provider" {
+			if missing := missingCloudIdPBlock(block.Body()); missing != "" {
+				name := labels[1]
+				if nm := block.Body().GetAttribute("display_name"); nm != nil {
+					if v := ExtractStringValue(nm); v != "" {
+						name = v
+					}
+				}
+				if !Quiet {
+					fmt.Printf("  Skipping cloud identity provider %q: the provider returned no %s block "+
+						"(it carries credentials no read exposes)\n", name, missing)
+				}
+				addr := resourceType + "." + labels[1]
+				_ = terraform.RemoveImportBlock(outputDir, addr)
+				skippedAddrs[addr] = true
+				continue
+			}
+		}
+
 		// Wire Required WriteOnly secrets the server never returns to sensitive
 		// variables (and seed their _wo_version companions) so the config validates.
 		if opts.InjectRequiredWriteOnly && schema != nil {
@@ -725,6 +752,33 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	terraform.FormatDir(outputDir)
 
 	return nil
+}
+
+// cloudIdPBlockForProvider maps a cloud identity provider's provider_name
+// discriminator to the nested attribute that must accompany it.
+var cloudIdPBlockForProvider = map[string]string{
+	"ENTRA_ID": "entra_id",
+	"GOOGLE":   "google",
+}
+
+// missingCloudIdPBlock returns the name of the credentials block a cloud
+// identity provider's provider_name requires but which is absent or null, or ""
+// when nothing is missing (or the discriminator is one we do not know, in which
+// case the resource is left alone for validation to judge).
+func missingCloudIdPBlock(body *hclwrite.Body) string {
+	attr := body.GetAttribute("provider_name")
+	if attr == nil {
+		return ""
+	}
+	required, ok := cloudIdPBlockForProvider[ExtractStringValue(attr)]
+	if !ok {
+		return ""
+	}
+	block := body.GetAttribute(required)
+	if block == nil || isNullAttr(block) {
+		return required
+	}
+	return ""
 }
 
 // hasEmptyDeviceGroups reports whether a blueprint's device_groups list is

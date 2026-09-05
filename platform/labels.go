@@ -24,6 +24,8 @@ func nameAttrForType(resourceType string) string {
 		"jamfplatform_pro_computer_prestage_enrollment",
 		"jamfplatform_pro_mobile_device_prestage_enrollment":
 		return "display_name"
+	case "jamfplatform_pro_cloud_identity_provider":
+		return "display_name"
 	case "jamfplatform_pro_account":
 		return "username"
 	case "jamfplatform_pro_allowed_file_extension":
@@ -35,10 +37,14 @@ func nameAttrForType(resourceType string) string {
 	case tAccountSSODomain:
 		return "domain_name"
 	// The Security Cloud search domain is a per-tenant singleton whose only
-	// attribute is the domain; hostname mappings have no name at all and fall
-	// through to the singleton label.
+	// attribute is the domain.
 	case tSCDnsSearchDomain:
 		return "domain_name"
+	// A tenant holds one UEM Connect integration, and it has no name of its
+	// own. The vendor it connects to is the only meaningful thing to call it,
+	// and reads as jamf_pro once sanitized.
+	case tSCUemConnect:
+		return "uem_vendor"
 	default:
 		return "name"
 	}

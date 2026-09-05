@@ -564,6 +564,16 @@ func main() {
 		if *url == "" {
 			*url = os.Getenv("JAMFPLATFORM_BASE_URL")
 		}
+		// The scope identifiers are read here as well as in ResolveScope, so
+		// that the interactive flow can tell whether the scope is already known
+		// without asking. Leaving that to ResolveScope alone made an exported
+		// JAMFPLATFORM_ENVIRONMENT_ID look unset and triggered the prompt.
+		if *environmentID == "" {
+			*environmentID = os.Getenv("JAMFPLATFORM_ENVIRONMENT_ID")
+		}
+		if *tenantID == "" {
+			*tenantID = os.Getenv("JAMFPLATFORM_TENANT_ID")
+		}
 	}
 	if !*verbose && os.Getenv("JAMFORMER_VERBOSE") == "true" {
 		*verbose = true
@@ -787,6 +797,10 @@ func main() {
 				} else {
 					missing = append(missing, "JAMF_USERNAME + JAMF_PASSWORD (or JAMF_CLIENT_ID + JAMF_CLIENT_SECRET)")
 				}
+			}
+			if isPlatform && needsScopePrompt(*environmentID, *tenantID) {
+				missing = append(missing, "JAMF_ENVIRONMENT_ID (or JAMF_TENANT_ID for the legacy tenant scope, "+
+					"or JAMF_ORGANIZATION_ID to confirm organization scope)")
 			}
 			log.Fatalf("Missing required credentials in non-interactive mode: %s\nSet via environment variables (or -url flag for URL).", strings.Join(missing, ", "))
 		}
@@ -1296,12 +1310,27 @@ func main() {
 			fmt.Printf("  %sAuto-fixed %d invalid attribute(s) removed by validation%s\n", uDim, fixResult.Fixed, uReset)
 		}
 		if len(fixResult.RequiredVars) > 0 {
-			noun := "variables"
+			noun, verb := "variables", "require"
 			if len(fixResult.RequiredVars) == 1 {
-				noun = "variable"
+				noun, verb = "variable", "requires"
 			}
-			fmt.Printf("\n  %s⚠%s  %s%d sensitive %s%s require values at plan/apply time:\n",
-				uYellow, uReset, uBold, len(fixResult.RequiredVars), noun, uReset)
+			// Not every required variable is a secret: a Required collection
+			// the tenant holds nothing for also lands here, and calling it
+			// sensitive when it is declared without `sensitive = true` would
+			// contradict the generated variables.tf.
+			allSensitive := true
+			for _, v := range fixResult.RequiredVars {
+				if v.NotSensitive {
+					allSensitive = false
+					break
+				}
+			}
+			adjective := ""
+			if allSensitive {
+				adjective = "sensitive "
+			}
+			fmt.Printf("\n  %s⚠%s  %s%d %s%s%s %s a value at plan/apply time:\n",
+				uYellow, uReset, uBold, len(fixResult.RequiredVars), adjective, noun, uReset, verb)
 
 			// Group by leaf attribute name for a scannable summary
 			type varEntry struct {

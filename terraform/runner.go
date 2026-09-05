@@ -428,13 +428,45 @@ func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[strin
 		cmd.Stdout = stdoutDest
 	}
 
-	if err := cmd.Run(); err != nil {
-		if stderr.Len() > 0 {
-			return fmt.Errorf("terraform query failed: %w\n%s", err, stderr.String())
-		}
-		return fmt.Errorf("terraform query failed: %w", err)
+	runErr := cmd.Run()
+	if runErr == nil {
+		return nil
 	}
-	return nil
+
+	// `terraform query -generate-config-out` writes the config file and then
+	// plans it, so a non-zero exit can mean either "nothing was discovered" or
+	// "the config was generated and some of it does not plan". The second is
+	// recoverable and common: a provider that returns null for an attribute it
+	// marks Required generates a block Terraform refuses, and post-processing
+	// exists to repair exactly that. Failing the run there would throw away a
+	// complete export over a handful of resources.
+	//
+	// So a populated output file downgrades the failure to a partial result.
+	// The caller decides what to do; the diagnostics travel with it so nothing
+	// is silently swallowed.
+	if fi, statErr := os.Stat(outputFile); statErr == nil && fi.Size() > 0 {
+		detail := stderr.String()
+		if detail == "" {
+			detail = runErr.Error()
+		}
+		return &PartialQueryError{Diagnostics: detail}
+	}
+
+	if stderr.Len() > 0 {
+		return fmt.Errorf("terraform query failed: %w\n%s", runErr, stderr.String())
+	}
+	return fmt.Errorf("terraform query failed: %w", runErr)
+}
+
+// PartialQueryError reports that `terraform query` generated configuration but
+// its plan phase rejected part of it. The config on disk is usable and the
+// caller is expected to continue and let post-processing repair it.
+type PartialQueryError struct {
+	Diagnostics string
+}
+
+func (e *PartialQueryError) Error() string {
+	return "terraform query generated configuration but part of it did not plan:\n" + e.Diagnostics
 }
 
 // ProvidersSchema runs terraform providers schema -json and returns the parsed result.

@@ -347,6 +347,7 @@ const (
 	tBrandingImage = "jamfplatform_pro_self_service_branding_image"
 	tClass         = "jamfplatform_pro_class"
 	tPatchSource   = "jamfplatform_pro_patch_external_source"
+	tAppInstaller  = "jamfplatform_pro_app_installer"
 )
 
 // Jamf Security Cloud target type names.
@@ -427,17 +428,12 @@ func ExtractSpecs() []postprocess.ExtractSpec {
 			FileKind:     postprocess.FileKindRaw,
 			Ext:          ".ppd",
 		},
-		// AI Governance policies: the tool vendor's own settings body, a JSON
-		// object string. Long enough to dominate the resource block, and far
-		// more readable as a file the provider compares as JSON — so
-		// reindenting the extracted file produces no plan change.
-		{
-			ResourceType: tAIGovPolicy,
-			AttrName:     "settings_json",
-			OutputSubdir: "ai_governance_policies",
-			FileKind:     postprocess.FileKindRaw,
-			Ext:          ".json",
-		},
+		// AI Governance policy settings are deliberately NOT extracted. The
+		// provider emits settings_json as a jsonencode({...}) expression rather
+		// than a quoted string, which the extraction engine cannot match — and
+		// should not, because that form is more readable in place than a
+		// file() reference, and the provider compares the value as JSON so
+		// formatting never shows as a change.
 		// Mobile device provisioning profiles: the base64 signed .mobileprovision
 		// at top-level profile_data. Distributable signed document (not a secret);
 		// the provider stores it verbatim, so file() round-trips.

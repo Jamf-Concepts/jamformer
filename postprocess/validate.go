@@ -31,6 +31,23 @@ var (
 	// conflictsWithRe matches `"attr": conflicts with other_attr`
 	conflictsWithRe = regexp.MustCompile(`"(\w+)":\s+conflicts\s+with\s+(\w+)`)
 
+	// emptyCollectionRe matches a SizeAtLeast / minimum-length validator
+	// rejecting an empty collection, e.g. "Attribute version_packages map must
+	// contain at least 1 elements, got: 0".
+	emptyCollectionRe = regexp.MustCompile(`(?i)\battribute\s+([\w.]+)\s+\w+\s+must\s+contain\s+at\s+least\s+\d+\s+elements?,\s*got:\s*0\b`)
+
+	// emptyStringRe matches a LengthAtLeast validator rejecting an empty
+	// string, e.g. "Attribute sender_settings.email_address string length must
+	// be at least 1, got: 0". The captured path may be dotted for a nested
+	// attribute.
+	emptyStringRe = regexp.MustCompile(`(?i)\battribute\s+([\w.]+)\s+string\s+length\s+must\s+be\s+at\s+least\s+\d+,\s*got:\s*0\b`)
+
+	// alsoRequiresRe matches the plugin-framework AlsoRequires diagnostic,
+	// "These attributes must be configured together: [oauth,uem_server_url]".
+	// The bracketed list is comma-separated and may carry dotted paths for
+	// nested attributes.
+	alsoRequiresRe = regexp.MustCompile(`must be configured together:\s*\[([^\]]+)\]`)
+
 	// requiredNullRe matches `The argument "attr.path" is required, but no definition was found.`
 	requiredNullRe = regexp.MustCompile(`The argument "([^"]+)" is required`)
 
@@ -87,6 +104,14 @@ type RequiredVar struct {
 	AttrPath string // original attribute path (e.g. "basic_auth_credentials.0.password")
 	Resource string // resource address (e.g. "jamfpro_smtp_server.settings")
 	Filename string // source file (e.g. "smtp_server.tf")
+	// VarType is the declared Terraform type. Empty means string, which is
+	// what a write-only secret wants. A collection attribute has to declare
+	// its own type or the config will not accept a list value.
+	VarType string
+	// NotSensitive suppresses `sensitive = true`. A list of approver email
+	// addresses is a required value but not a secret, and marking it sensitive
+	// only makes it harder to see what a plan is doing.
+	NotSensitive bool
 }
 
 // FixResult holds the outcome of FixValidationErrors.
@@ -172,7 +197,63 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 				continue
 			}
 
-			fix := classifyFix(diag.Summary, diag.Detail, filePath, diag.Range.Start.Line)
+			// An empty collection on a Required attribute: the provider insists
+			// on at least one element and the tenant holds none (App Request
+			// with no approvers is the case that surfaced this). It cannot be
+			// removed — it is Required — and no element can be invented, so it
+			// becomes a variable the user supplies. Optional ones are removed
+			// instead, in classifyFix.
+			if m := emptyCollectionRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
+				attrPath := m[1]
+				leaf := leafAttrName(attrPath)
+				src, _ := os.ReadFile(filePath)
+				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+				if resType != "" && schema.isRequired(resType, attrBlockPath(attrPath), leaf) {
+					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
+					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+						rv := RequiredVar{
+							VarName:  varName,
+							AttrPath: attrPath,
+							Resource: resType + "." + resLabel,
+							Filename: diag.Range.Filename,
+							// The diagnostic names the collection kind
+							// ("set must contain at least 1"), but set(string)
+							// accepts a list literal and is the safe shape for
+							// either, so it is used for both.
+							VarType:      "set(string)",
+							NotSensitive: !schema.isSensitive(resType, attrBlockPath(attrPath), leaf),
+						}
+						appendVariables(outputDir, []RequiredVar{rv})
+						result.RequiredVars = append(result.RequiredVars, rv)
+						fixed++
+						continue
+					}
+				}
+			}
+
+			// An empty string rejected by a minimum-length validator: the
+			// server holds no value for an attribute the provider insists on
+			// (an unconfigured SMTP sender address is the usual case). There is
+			// nothing to recover and nothing safe to invent, so it becomes a
+			// variable the user must supply — the same treatment an explicitly
+			// null Required attribute gets, and for the same reason.
+			if m := emptyStringRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
+				attrPath := m[1]
+				src, _ := os.ReadFile(filePath)
+				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+				if resType != "" && !schema.isWriteOnly(resType, "", leafAttrName(attrPath)) {
+					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
+					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+						rv := RequiredVar{VarName: varName, AttrPath: attrPath, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
+						appendVariables(outputDir, []RequiredVar{rv})
+						result.RequiredVars = append(result.RequiredVars, rv)
+						fixed++
+						continue
+					}
+				}
+			}
+
+			fix := classifyFix(diag.Summary, diag.Detail, filePath, diag.Range.Start.Line, schema)
 			if fix == nil {
 				continue
 			}
@@ -322,12 +403,12 @@ func setNullToZeroValue(filePath string, src []byte, resType, resLabel, attrPath
 		}
 
 		leaf := leafAttrName(attrPath)
-		attr := body.GetAttribute(leaf)
-		if attr == nil {
-			continue
-		}
-
-		if !isNullValue(attr) {
+		// The attribute may be absent rather than null: the null-stripper
+		// removes an optional-looking null, and the provider then reports the
+		// argument as required. Setting it works either way, so absence is
+		// handled by falling through rather than giving up — bailing here left
+		// the config unplannable with no way for the user to see what to add.
+		if attr := body.GetAttribute(leaf); attr != nil && !isNullValue(attr) {
 			continue
 		}
 
@@ -359,13 +440,10 @@ func replaceNullWithVar(f *hclwrite.File, resType, resLabel, attrPath, varName s
 		}
 
 		leaf := leafAttrName(attrPath)
-		attr := body.GetAttribute(leaf)
-		if attr == nil {
-			continue
-		}
-
-		// Only replace if the current value is null
-		if !isNullValue(attr) {
+		// As in setNullToZeroValue: an absent attribute is the same problem as
+		// a null one — the null-stripper took it out and the provider now
+		// reports it as required — so it is added rather than skipped.
+		if attr := body.GetAttribute(leaf); attr != nil && !isNullValue(attr) {
 			continue
 		}
 
@@ -440,9 +518,18 @@ func appendVariables(outputDir string, vars []RequiredVar) {
 		}
 		seen[v.VarName] = true
 
-		block := fmt.Sprintf("\nvariable %q {\n  description = %q\n  type        = string\n  sensitive   = true\n}\n",
-			v.VarName,
-			fmt.Sprintf("Required value for %s %s (write-only, not returned by API)", v.Resource, v.AttrPath),
+		varType := v.VarType
+		if varType == "" {
+			varType = "string"
+		}
+		sensitive := "\n  sensitive   = true"
+		description := fmt.Sprintf("Required value for %s %s (write-only, not returned by API)", v.Resource, v.AttrPath)
+		if v.NotSensitive {
+			sensitive = ""
+			description = fmt.Sprintf("Required value for %s %s (the tenant holds none, so it must be supplied here)", v.Resource, v.AttrPath)
+		}
+		block := fmt.Sprintf("\nvariable %q {\n  description = %q\n  type        = %s%s\n}\n",
+			v.VarName, description, varType, sensitive,
 		)
 		newVars = append(newVars, []byte(block)...)
 	}
@@ -464,7 +551,7 @@ func appendVariables(outputDir string, vars []RequiredVar) {
 
 // classifyFix determines what fix to apply based on the diagnostic message.
 // Returns nil if the error is not auto-fixable.
-func classifyFix(summary, detail, filePath string, line int) *validationFix {
+func classifyFix(summary, detail, filePath string, line int, schema *ProviderSchema) *validationFix {
 	detailLower := strings.ToLower(detail)
 	combined := summary + " " + detail
 
@@ -492,7 +579,125 @@ func classifyFix(summary, detail, filePath string, line int) *validationFix {
 		return &validationFix{filePath: filePath, line: line, attrName: m[1]}
 	}
 
+	// Strategy 5: an empty collection rejected by a minimum-size validator.
+	// The provider read it back as {} or [], which its own schema forbids.
+	// An empty collection carries nothing, so dropping it loses no
+	// configuration: either the attribute is optional and its absence is what
+	// the server meant, or it is required and the next pass says so in clearer
+	// terms than a size violation.
+	if m := emptyCollectionRe.FindStringSubmatch(combined); len(m) >= 2 {
+		name := m[1]
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		// A Required attribute is never removed. Removing one trades this
+		// error for "the argument is required, but no definition was found",
+		// which the required-null handler answers by putting the attribute
+		// back — the two would take turns until the iteration cap.
+		if schema != nil {
+			src, _ := os.ReadFile(filePath)
+			if resType, _ := resourceAtLine(src, line); resType != "" &&
+				schema.isRequired(resType, attrBlockPath(m[1]), name) {
+				return nil
+			}
+		}
+		return &validationFix{filePath: filePath, line: line, attrName: name}
+	}
+
+	// Strategy 6: AlsoRequires — "These attributes must be configured together:
+	// [oauth,uem_server_url]". Where some of the named attributes are absent
+	// (or explicitly null) and others are set, the ones that are set cannot
+	// stand: the provider requires a companion the server did not give us. So
+	// they come out.
+	//
+	// This is the shape a provider read produces when it populates an attribute
+	// belonging to a mode the object is not in — Security Cloud UEM Connect
+	// returns uem_server_url for a platform_tenant connector, whose companion
+	// oauth is absent. Removing the orphan also clears any ConflictsWith
+	// diagnostic it was part of, on the next validate pass.
+	if m := alsoRequiresRe.FindStringSubmatch(detail); len(m) >= 2 {
+		if attr := orphanedCompanion(filePath, line, splitAttrList(m[1])); attr != "" {
+			return &validationFix{filePath: filePath, line: line, attrName: attr}
+		}
+	}
+
 	return nil
+}
+
+// splitAttrList parses the bracketed attribute list of an AlsoRequires or
+// ConflictsWith diagnostic into leaf attribute names.
+func splitAttrList(list string) []string {
+	var out []string
+	for _, raw := range strings.Split(list, ",") {
+		name := strings.TrimSpace(raw)
+		// A nested attribute is reported as a dotted path; the leaf is what
+		// names it inside the block the diagnostic points at.
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// orphanedCompanion inspects the resource block at the given line and, for a
+// set of attributes the provider requires together, returns the single one that
+// is set while at least one of the others is missing or null.
+//
+// It returns "" unless exactly one is orphaned. With two or more set and others
+// missing there is no way to tell which the object actually wants, and removing
+// the wrong one loses real configuration — better to leave the diagnostic for a
+// human than to guess.
+func orphanedCompanion(filePath string, line int, attrs []string) string {
+	if len(attrs) < 2 {
+		return ""
+	}
+	src, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	resType, resLabel := resourceAtLine(src, line)
+	f, diags := hclwrite.ParseConfig(src, filePath, hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return ""
+	}
+
+	for _, block := range f.Body().Blocks() {
+		if block.Type() != "resource" {
+			continue
+		}
+		labels := block.Labels()
+		if len(labels) < 2 {
+			continue
+		}
+		if resType != "" && resLabel != "" && (labels[0] != resType || labels[1] != resLabel) {
+			continue
+		}
+
+		var set []string
+		missing := 0
+		for _, name := range attrs {
+			attr := block.Body().GetAttribute(name)
+			if attr == nil || isNullAttr(attr) {
+				missing++
+				continue
+			}
+			set = append(set, name)
+		}
+		if missing > 0 && len(set) == 1 {
+			return set[0]
+		}
+		return ""
+	}
+	return ""
+}
+
+// isNullAttr reports whether an attribute is the literal null, which a
+// validator treats as not configured.
+func isNullAttr(attr *hclwrite.Attribute) bool {
+	return strings.TrimSpace(string(attr.Expr().BuildTokens(nil).Bytes())) == "null"
 }
 
 // extractAttrName pulls the attribute name from a diagnostic summary or detail.
