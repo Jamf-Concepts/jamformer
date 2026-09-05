@@ -221,9 +221,9 @@ func printSplash() {
 
 	// ── Phase 2: Zoom out → spin → zoom in ─────────────────────────
 	// 2a: Jamf logo zooms out (full → small)
-	for i := len(zoomIn) - 1; i >= 0; i-- {
+	for _, z := range slices.Backward(zoomIn) {
 		fmt.Printf("\033[%dA", gridRows)
-		renderScaled(&jamf, zoomIn[i].rows, zoomIn[i].cols, jamfBlue)
+		renderScaled(&jamf, z.rows, z.cols, jamfBlue)
 		time.Sleep(40 * time.Millisecond)
 	}
 

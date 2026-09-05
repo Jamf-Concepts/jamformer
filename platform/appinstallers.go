@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
 	"github.com/hashicorp/hcl/v2"
@@ -249,11 +250,11 @@ func importTargetLabel(block *hclwrite.Block, resourceType string) string {
 // isNullExpr reports whether an attribute is the bare literal null.
 func isNullExpr(attr *hclwrite.Attribute) bool {
 	expr := string(attr.Expr().BuildTokens(nil).Bytes())
-	trimmed := ""
+	var trimmed strings.Builder
 	for _, r := range expr {
 		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
-			trimmed += string(r)
+			trimmed.WriteRune(r)
 		}
 	}
-	return trimmed == "null"
+	return trimmed.String() == "null"
 }

@@ -804,7 +804,7 @@ func provablyOptional(filePath string, line int, attrPath string, schema *Provid
 // ConflictsWith diagnostic into leaf attribute names.
 func splitAttrList(list string) []string {
 	var out []string
-	for _, raw := range strings.Split(list, ",") {
+	for raw := range strings.SplitSeq(list, ",") {
 		name := strings.TrimSpace(raw)
 		// A nested attribute is reported as a dotted path; the leaf is what
 		// names it inside the block the diagnostic points at.

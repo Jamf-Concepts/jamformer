@@ -50,7 +50,7 @@ This is always the authoritative, current list — it's generated from the same 
 
 ## Prerequisites
 
-- [Go 1.26+](https://go.dev/dl/) (to build)
+- [Go 1.27+](https://go.dev/dl/) (to build)
 - **Jamf Platform:** An API integration (OAuth2) registered in Jamf Account, with read permissions for what you intend to export. Its **scope** decides what it can reach — see [API integration scope](#api-integration-scope). Requires Terraform 1.14+.
 - **Jamf Protect:** An API client (OAuth2) with appropriate privileges. Requires Terraform 1.14+.
 - **Jamf Pro:** A user account with read/auditor access, or an API integration with appropriate privileges.

@@ -64,8 +64,7 @@ func TestClassifyQueryResult(t *testing.T) {
 		}
 
 		err := classifyQueryResult(runErr, out, diags)
-		var partial *PartialQueryError
-		if errors.As(err, &partial) {
+		if _, ok := errors.AsType[*PartialQueryError](err); ok {
 			t.Fatal("an empty output file generated no config; the run must fail")
 		}
 		if !errors.Is(err, runErr) || !strings.Contains(err.Error(), diags) {
@@ -77,8 +76,7 @@ func TestClassifyQueryResult(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "never-written.tf")
 
 		err := classifyQueryResult(runErr, out, "")
-		var partial *PartialQueryError
-		if errors.As(err, &partial) {
+		if _, ok := errors.AsType[*PartialQueryError](err); ok {
 			t.Fatal("no output file at all means nothing was generated; the run must fail")
 		}
 		if !errors.Is(err, runErr) {

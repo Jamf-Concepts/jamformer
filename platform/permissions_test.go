@@ -5,6 +5,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -174,12 +175,7 @@ func TestRequiredCapabilitiesIsScopeAware(t *testing.T) {
 }
 
 func contains(hay []string, needle string) bool {
-	for _, v := range hay {
-		if v == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(hay, needle)
 }
 
 // TestEveryExtraReadHasReadPermissions is TestEveryResourceHasReadPermissions

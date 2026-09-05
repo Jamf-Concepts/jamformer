@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -186,8 +187,8 @@ func cleanupEmptyDirs(root string) {
 		}
 		return nil
 	})
-	for i := len(dirs) - 1; i >= 0; i-- {
-		_ = os.Remove(dirs[i]) // only removes if empty
+	for _, dir := range slices.Backward(dirs) {
+		_ = os.Remove(dir) // only removes if empty
 	}
 }
 
