@@ -125,6 +125,21 @@ type RequiredVar struct {
 type FixResult struct {
 	Fixed        int           // total attributes fixed (removed, set, or replaced)
 	RequiredVars []RequiredVar // write-only variables that need user-supplied values
+	// Edits records what was changed and why, one entry per fix. The auto-fix
+	// edits generated configuration on the user's behalf, so it has to be able
+	// to say what it touched — a bare count leaves no way to tell a correct
+	// repair from a wrong one, or to notice when a provider fix upstream has
+	// made a repair unnecessary.
+	Edits []FixEdit
+}
+
+// FixEdit is one auto-fix: the resource and attribute changed, and the
+// diagnostic summary that prompted it.
+type FixEdit struct {
+	Resource string // resource address, e.g. "jamfplatform_pro_policy.install_chrome"
+	Attr     string // attribute path
+	Action   string // "removed", "set" or "replaced with a variable"
+	Reason   string // the diagnostic summary
 }
 
 // FixValidationErrors runs terraform validate in a loop, parsing error
@@ -232,6 +247,7 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 						}
 						appendVariables(outputDir, []RequiredVar{rv})
 						result.RequiredVars = append(result.RequiredVars, rv)
+						result.Edits = append(result.Edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
 						fixed++
 						continue
 					}
@@ -254,6 +270,7 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 						rv := RequiredVar{VarName: varName, AttrPath: attrPath, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
 						appendVariables(outputDir, []RequiredVar{rv})
 						result.RequiredVars = append(result.RequiredVars, rv)
+						result.Edits = append(result.Edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
 						fixed++
 						continue
 					}
@@ -265,13 +282,18 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 				continue
 			}
 
+			src, _ := os.ReadFile(filePath)
+			resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+			addr := resType + "." + resLabel
 			if fix.newValue == "" {
 				if removeAttributeFromFile(fix.filePath, fix.line, fix.attrName) {
 					fixed++
+					result.Edits = append(result.Edits, FixEdit{addr, fix.attrName, "removed", diag.Summary})
 				}
 			} else {
 				if setAttributeInFile(fix.filePath, fix.line, fix.attrName, fix.newValue) {
 					fixed++
+					result.Edits = append(result.Edits, FixEdit{addr, fix.attrName, "set to " + fix.newValue, diag.Summary})
 				}
 			}
 		}
@@ -289,7 +311,13 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 
 		result.Fixed += fixed
 		if !Quiet {
-			fmt.Printf("  Auto-fixed %d validation errors, re-validating...\n", fixed)
+			fmt.Printf("  Auto-fixed %d validation error(s), re-validating...\n", fixed)
+			// Name each edit. This is generated configuration being changed
+			// without being asked, and the count alone tells the user nothing
+			// they can check.
+			for _, e := range result.Edits[len(result.Edits)-min(fixed, len(result.Edits)):] {
+				fmt.Printf("    %s: %s %s (%s)\n", e.Resource, e.Attr, e.Action, e.Reason)
+			}
 		}
 		terraform.FormatDir(outputDir)
 	}

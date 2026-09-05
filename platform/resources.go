@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"github.com/Jamf-Concepts/jamformer/postprocess"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // ResourceDef describes a single Jamf Platform resource type.
@@ -448,9 +448,21 @@ func ExtractSpecs() []postprocess.ExtractSpec {
 }
 
 // WriteSingletonImports writes singletons_import.tf with an import block per
-// selected singleton settings resource (label "singleton", id "singleton"), so a
-// subsequent `terraform plan -generate-config-out` can materialise their config.
-// Returns false if no singleton import blocks were written.
+// selected singleton settings resource (label "singleton", identity id
+// "singleton"), so a subsequent `terraform plan -generate-config-out` can
+// materialise their config. Returns false if no singleton import blocks were
+// written.
+//
+// The identity form (`identity = { id = "singleton" }`) is used rather than the
+// flat `id = "singleton"`, for two reasons. It is what
+// `plan -generate-config-out` emits itself, so the blocks jamformer writes match
+// the ones it reads back. And on the flat form a singleton that is not
+// configured on the tenant reports a framework-level "Missing Resource Identity
+// After Read", which tells the user to report a provider bug: `ImportState`
+// populates state before `Read` runs, so `Read` cannot tell an import from a
+// refresh, takes the refresh path for a missing object and returns no identity.
+// The identity form leaves state null, which `Read` recognises, and an
+// unconfigured singleton reports plainly that there is nothing to import.
 func WriteSingletonImports(outputDir string, selectedResources map[string]bool) (bool, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
@@ -466,7 +478,12 @@ func WriteSingletonImports(outputDir string, selectedResources map[string]bool) 
 		block.Body().SetAttributeRaw("to", hclwrite.Tokens{
 			{Type: hclsyntax.TokenIdent, Bytes: []byte(r.TFType + ".singleton")},
 		})
-		block.Body().SetAttributeValue("id", cty.StringVal(r.SingletonImportID))
+		// One raw token for the whole object expression: hclwrite inserts its
+		// own spacing between tokens, so assembling this from brace/ident/quote
+		// tokens yields `{  id =  "singleton"  }`.
+		block.Body().SetAttributeRaw("identity", hclwrite.Tokens{
+			{Type: hclsyntax.TokenIdent, Bytes: fmt.Appendf(nil, "{ id = %q }", r.SingletonImportID)},
+		})
 		count++
 	}
 	if count == 0 {
