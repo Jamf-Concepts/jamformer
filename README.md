@@ -33,7 +33,9 @@ A CLI tool that converts a Jamf instance into a structured Terraform project. It
 | [jsc](https://github.com/Jamf-Concepts/terraform-provider-jsctfprovider) | `-provider jsc` | Local account or Jamf ID | Terraform data sources |
 | [jamfpro](https://github.com/deploymenttheory/terraform-provider-jamfpro) — community provider by Deployment Theory | `-provider jamfpro` | Basic auth or OAuth2 | Jamf Pro API via SDK |
 
-`jamfplatform` federates the full Jamf Pro resource surface (`jamfplatform_pro_*`) alongside native Platform Services resources (blueprints, compliance benchmarks, device groups), and is the default. `jamfpro` is the community-maintained provider by Deployment Theory and remains fully supported.
+`jamfplatform` federates the full Jamf Pro resource surface (`jamfplatform_pro_*`) alongside native Platform Services resources (blueprints, compliance benchmarks, device groups), Jamf Security Cloud (`jamfplatform_security_cloud_*`), Jamf AI Governance (`jamfplatform_ai_governance_*`) and Jamf Account single sign-on (`jamfplatform_account_*`) — and is the default. `jamfpro` is the community-maintained provider by Deployment Theory and remains fully supported.
+
+> The Jamf Platform API reached general availability on 3 September 2026. jamformer targets the GA gateway (`https://{region}.api.jamfcloud.com`) and provider `v0.30.0` or later. Beta API integration credentials are revoked, and `jamfplatform_pro_api_client` / `jamfplatform_pro_api_role` no longer exist — their endpoints were unpublished at GA. See [API integration scope](#api-integration-scope).
 
 ## Resource Coverage
 
@@ -49,7 +51,7 @@ This is always the authoritative, current list — it's generated from the same 
 ## Prerequisites
 
 - [Go 1.26+](https://go.dev/dl/) (to build)
-- **Jamf Platform:** An API client (OAuth2) with appropriate privileges, plus a tenant ID. Requires Terraform 1.14+.
+- **Jamf Platform:** An API integration (OAuth2) registered in Jamf Account, with read permissions for what you intend to export. Its **scope** decides what it can reach — see [API integration scope](#api-integration-scope). Requires Terraform 1.14+.
 - **Jamf Protect:** An API client (OAuth2) with appropriate privileges. Requires Terraform 1.14+.
 - **Jamf Pro:** A user account with read/auditor access, or an API integration with appropriate privileges.
 - **JSC:** A local account or Jamf ID with access to Jamf Security Cloud (radar.wandera.com). SSO/SAML accounts are not supported.
@@ -64,6 +66,8 @@ cd jamformer
 go build -o jamformer .
 ```
 
+jamformer checks for a newer release on launch and, if there is one, prints the upgrade command for how the binary was installed — `brew upgrade`, `go install`, `git pull && go build`, or a link to the release. The check runs in the background, is cached for 24 hours, and never delays or blocks a run. Set `JAMFORMER_SKIP_UPDATE_CHECK=1` to turn it off; `jamformer -version` reports the install method it detected.
+
 ## Quick Start
 
 `jamfplatform` is the default provider — no `-provider` flag needed:
@@ -71,11 +75,34 @@ go build -o jamformer .
 ```bash
 export JAMF_CLIENT_ID='your-client-id'
 export JAMF_CLIENT_SECRET='your-client-secret'
-export JAMF_TENANT_ID='your-tenant-id'
-./jamformer -url https://us.apigw.jamf.com
+export JAMF_ENVIRONMENT_ID='your-environment-id'
+./jamformer -url https://eu.api.jamfcloud.com
 ```
 
-Jamf Platform is OAuth2-only, and the URL is your regional API gateway (e.g. `https://us.apigw.jamf.com`, `https://eu.apigw.jamf.com`) rather than a Jamf Pro instance hostname — there's no shorthand expansion for it. `JAMF_TENANT_ID` is **required** (pro endpoints are tenant-scoped, like package downloads, Jamf Connect discovery, and Self Service branding image downloads) — jamformer fails fast if it's missing.
+Jamf Platform is OAuth2-only, and the URL is your regional GA gateway host — `https://us.api.jamfcloud.com`, `https://eu.api.jamfcloud.com` or `https://apac.api.jamfcloud.com` — not a Jamf Pro instance hostname, and there's no shorthand expansion for it. Give the host alone: the gateway serves every API namespace at the root, and a path such as `/api` makes authentication fail.
+
+The provider's own `JAMFPLATFORM_BASE_URL`, `JAMFPLATFORM_CLIENT_ID`, `JAMFPLATFORM_CLIENT_SECRET`, `JAMFPLATFORM_ENVIRONMENT_ID` and `JAMFPLATFORM_TENANT_ID` are accepted as fallbacks, so a shell already set up to run `terraform` needs no second set of exports.
+
+### API integration scope
+
+An API integration is registered at exactly one of three scopes, chosen in Jamf Account and **not changeable afterwards**. The scope decides what jamformer can export, so set the one your integration actually carries:
+
+| Scope | Set | Reaches |
+|---|---|---|
+| **Environment** (preferred) | `JAMF_ENVIRONMENT_ID` | Everything except Jamf Account — the federated Jamf Pro surface, Security Cloud, device groups, and the environment-only families: Blueprints, Compliance Benchmarks, AI Governance |
+| **Tenant** (legacy) | `JAMF_TENANT_ID` | Jamf Pro, Security Cloud and device groups. **Not** Blueprints, Compliance Benchmarks or AI Governance — the provider refuses those at configure time |
+| **Organization** | neither (optionally `JAMF_ORGANIZATION_ID` to say so explicitly) | Only the Jamf Account SSO resources (`jamfplatform_account_*`), and it is the only scope that reaches them |
+
+The two IDs are mutually exclusive; setting both is an error, as it is in the provider. jamformer reports the scope it resolved and names the resource types it is skipping because of it, so an export never quietly returns less than your tenant holds:
+
+```
+API integration scope: tenant (85f69825-…) — legacy; prefer an environment-scoped integration
+  Skipping 5 resource type(s) this scope cannot reach:
+    Blueprints, Compliance Benchmarks, AI Governance Policies, Jamf Account SSO Domains, Jamf Account SSO Connections
+    Blueprints, Compliance Benchmarks and AI Governance need an environment-scoped integration.
+```
+
+Package downloads, Jamf Connect discovery and Self Service branding images all ride on the federated Jamf Pro surface, which environment and tenant scope both reach; organization scope reaches none of it.
 
 Credentials are set via environment variables (`JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET`) to avoid leaking secrets in shell history and process listings. Run without them for interactive prompts. The URL can be passed as a flag or via `JAMF_URL`. Run `./jamformer -help credentials` for auth-method detection details.
 
@@ -108,13 +135,16 @@ Credentials are sourced from environment variables or interactive prompts only (
 |---|---|
 | `JAMF_CLIENT_ID` | API client ID (OAuth2 — Jamf Platform / Protect) |
 | `JAMF_CLIENT_SECRET` | API client secret (OAuth2 — Jamf Platform / Protect) |
-| `JAMF_TENANT_ID` | Jamf Platform tenant ID (required, Jamf Platform only) |
+| `JAMF_ENVIRONMENT_ID` | Jamf Platform environment ID — the preferred scope (Jamf Platform only) |
+| `JAMF_TENANT_ID` | Jamf Platform tenant ID — the legacy scope (Jamf Platform only) |
+| `JAMF_ORGANIZATION_ID` | Set to select organization scope explicitly; never sent (Jamf Platform only) |
 | `JAMF_USERNAME` | Jamf Pro / JSC username (basic auth) |
 | `JAMF_PASSWORD` | Jamf Pro / JSC password (basic auth) |
 
 jamformer needs **Read** on every object type it is asked to discover — it performs no writes.
 
-- **Jamf Platform / Protect:** create an OAuth2 API client with read access to every object type you intend to discover. Refer to the Jamf Platform / Protect admin documentation for current role names.
+- **Jamf Platform:** register an API integration in Jamf Account's **Platform API integrations** UI and grant the read permissions for what you intend to export. Permissions are organised by capability and action (`device-groups:read`, `policies:read`, …). Every export writes a **`PERMISSIONS.md`** into its output directory listing the exact capability set it required, per resource type, with the endpoint each requirement came from — so the next run, or a CI job, can be given precisely those permissions rather than over-granted. It is generated from the Jamf Platform Go SDK's own privilege registries, so it tracks the API rather than a hand-maintained table.
+- **Jamf Protect:** create an OAuth2 API client with read access to every object type you intend to discover. Refer to the Jamf Protect admin documentation for current role names.
 - **Jamf Pro:** the built-in `Auditor` user role (basic auth) or an `Auditor` privilege set (OAuth2) is the easiest setup and covers everything jamformer supports. For minimum privilege, grant `Read` on each object type you intend to discover — privilege names in the Jamf Pro role editor generally map 1:1 to the `-list-resources` output.
 - **JSC:** a local account or Jamf ID with read access to every object type you intend to discover.
 
@@ -158,6 +188,7 @@ The tool generates a self-contained Terraform project in the output directory:
 - Per-type resource files — for Jamf Platform, the federated Jamf Pro surface uses a `pro_` prefix (e.g. `pro_policy.tf`, `pro_script.tf`), while native Platform resources keep the plain type name (`blueprints.tf`, `device_groups.tf`); other providers use the plain type name too (e.g. `policies.tf`, `scripts.tf`)
 - Per-type import block files (e.g. `pro_policy_import.tf`, `policies_import.tf`), plus `singletons_import.tf` for singleton settings and, for Jamf Platform, `jamf_connect_import.tf`
 - `support_files/` — extracted scripts, configuration profiles, app configurations, packages, and branding images; `device_enrollment_tokens/` and `volume_purchasing_tokens/` directories are created as the recommended location for token files
+- `PERMISSIONS.md` (Jamf Platform) — the read capability set the export required, per resource type, with the endpoint behind each requirement
 
 The generated `provider.tf` includes a minimum version constraint (`>= X.Y.Z`) based on the provider version that terraform downloaded. Use `-provider-version` to pin an exact version instead.
 
@@ -199,10 +230,10 @@ jamformer detects non-interactive environments and fails fast if credentials are
 ```yaml
 - name: Generate Terraform from Jamf Platform
   env:
-    JAMF_URL: ${{ secrets.JAMF_URL }}              # e.g. https://us.apigw.jamf.com
+    JAMF_URL: ${{ secrets.JAMF_URL }}              # e.g. https://eu.api.jamfcloud.com
     JAMF_CLIENT_ID: ${{ secrets.JAMF_CLIENT_ID }}
     JAMF_CLIENT_SECRET: ${{ secrets.JAMF_CLIENT_SECRET }}
-    JAMF_TENANT_ID: ${{ secrets.JAMF_TENANT_ID }}
+    JAMF_ENVIRONMENT_ID: ${{ secrets.JAMF_ENVIRONMENT_ID }}
   run: ./jamformer -skip-package-downloads
 ```
 
@@ -216,7 +247,7 @@ Verified at startup before any terraform step runs, so this fails fast.
 
 - Confirm the right environment variables are set for the auth method you intend to use. Basic auth needs `JAMF_USERNAME` and `JAMF_PASSWORD`. OAuth2 needs `JAMF_CLIENT_ID` and `JAMF_CLIENT_SECRET`. Setting credentials for both at once is rejected.
 - Jamf Platform and Jamf Protect accept OAuth2 only; JSC accepts basic auth only.
-- Jamf Platform additionally requires `JAMF_TENANT_ID` — jamformer fails fast at startup if it's missing, separately from any auth error (see [Credentials & Permissions](#credentials--permissions)).
+- Jamf Platform: `403 OWNERSHIP_FORBIDDEN` means the scope ID does not match how the integration was registered — an environment ID supplied for a tenant-scoped integration, or the reverse — even when both IDs belong to the same customer. `403 BAD_PERMISSIONS` means a missing read permission; the generated `PERMISSIONS.md` lists what the export needs. Authentication failing outright usually means pre-GA credentials, which are revoked (see [API integration scope](#api-integration-scope)).
 - For OAuth2, the integration must have an active privilege set / role. A client with no privileges will authenticate successfully but fail on the first real call.
 - If the URL is wrong (typo, missing region, or mismatched Protect tenant), you will usually see a network or TLS error rather than an auth error.
 

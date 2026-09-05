@@ -71,7 +71,9 @@ getting a single-instance project working, start there first.
     Set per-env credentials with an environment name suffix:
       JAMF_URL_STAGING, JAMF_CLIENT_ID_STAGING, JAMF_CLIENT_SECRET_STAGING
       JAMF_URL_PROD, JAMF_CLIENT_ID_PROD, JAMF_CLIENT_SECRET_PROD
-    jamfplatform is OAuth2-only per env; JAMF_TENANT_ID_<ENV> is optional
+    jamfplatform is OAuth2-only per env. Scope per environment:
+    JAMF_ENVIRONMENT_ID_<ENV> (preferred) or JAMF_TENANT_ID_<ENV> (legacy);
+    neither means organization scope. The two are mutually exclusive.
     (enables package / Jamf Connect / Self Service branding downloads).
     jamfpro accepts basic auth or OAuth2 per env.
 
