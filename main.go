@@ -411,13 +411,36 @@ func printResourceList(provider string) {
 
 	if showPlatform {
 		fmt.Println("Jamf Platform (jamfplatform) [default]:")
+		// Scope and read permissions are shown alongside each type because
+		// they are the two things that decide whether a given integration can
+		// export it at all — and an integration's scope is fixed when it is
+		// created, so knowing it before creating one matters.
+		fmt.Printf("  %-46s %-58s %-22s %s\n", "FILTER KEY", "TERRAFORM TYPE", "SCOPE", "READ PERMISSIONS")
 		sorted := slices.Clone(platform.Resources)
 		slices.SortFunc(sorted, func(a, b platform.ResourceDef) int {
 			return strings.Compare(a.FilterKey, b.FilterKey)
 		})
 		for _, r := range sorted {
-			fmt.Printf("  %-50s %s\n", r.FilterKey, r.TFType)
+			perms, reason := platform.ResourcePermissions(r.FilterKey)
+			permText := ""
+			if reason != "" {
+				// Never print an empty permission set as "none needed" — the
+				// SDK is explicit that an undeclared privilege is not the same
+				// as no privilege.
+				permText = "(not recorded)"
+			} else {
+				caps := make([]string, 0, len(perms))
+				for _, p := range perms {
+					caps = append(caps, p.Capability)
+				}
+				permText = strings.Join(caps, " ")
+			}
+			fmt.Printf("  %-46s %-58s %-22s %s\n", r.FilterKey, r.TFType, r.Scopes.Describe(), permText)
 		}
+		fmt.Println()
+		fmt.Println("  Scope is chosen when an API integration is created in Jamf Account and cannot be")
+		fmt.Println("  changed afterwards. Read permissions are the capability names the permission")
+		fmt.Println("  picker uses; every export also writes a PERMISSIONS.md listing what it required.")
 		if showProtect || showJSC || showPro {
 			fmt.Println()
 		}
