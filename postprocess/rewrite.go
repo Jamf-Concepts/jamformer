@@ -53,6 +53,8 @@ func applyLeafRewrite(body *hclwrite.Body, rule ReferenceRule, reg *registry.Reg
 	switch {
 	case rule.EmbeddedIDs:
 		return rewriteEmbeddedIDs(body, rule, reg)
+	case rule.PrefixedIDs && rule.ElementAttr == "":
+		return rewritePrefixedID(body, rule.AttrName, rule, reg)
 	case rule.ElementAttr != "":
 		return rewriteListOfObjectsElement(body, rule, reg)
 	case rule.IsList:
@@ -343,6 +345,9 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 			}
 			objBytes := exprBytes[i : objClose+1]
 			if processed, ok := descendObjectExpr(objBytes, nil, func(leaf *hclwrite.Body) bool {
+				if rule.PrefixedIDs {
+					return rewritePrefixedID(leaf, rule.ElementAttr, rule, reg)
+				}
 				er := elemRule
 				if rule.DiscriminatorAttr != "" {
 					target, ok := discriminatorTarget(leaf, rule)
@@ -457,4 +462,62 @@ func discriminatorTarget(leaf *hclwrite.Body, rule ReferenceRule) (string, bool)
 	}
 	target, ok := rule.DiscriminatorMap[ExtractStringValue(attr)]
 	return target, ok
+}
+
+// rewritePrefixedID rewrites an attribute whose value is an ID carried behind a
+// literal prefix that also selects the target type — UEM Connect's
+// uem_group_id ("computer_12", "mobile_7") is the case it exists for.
+//
+// The longest prefix in rule.DiscriminatorMap that the value starts with wins.
+// Its tail is resolved against the mapped resource type and the value is
+// rebuilt as a quoted template keeping the prefix literal, so "computer_12"
+// becomes "computer_${jamfplatform_device_group.x.jamf_pro_id}".
+//
+// Anything that does not match — an unknown prefix, an empty tail, a tail no
+// registry entry claims — is left exactly as it was. A prefixed value is
+// meaningful on its own, so an unresolved one is not a broken reference and
+// gets no TODO marker.
+func rewritePrefixedID(body *hclwrite.Body, attrName string, rule ReferenceRule, reg *registry.Registry) bool {
+	attr := body.GetAttribute(attrName)
+	if attr == nil {
+		return false
+	}
+	val := ExtractStringValue(attr)
+	if val == "" {
+		return false
+	}
+
+	// Longest matching prefix wins, so that "computer_" is preferred over a
+	// hypothetical "c_" and the map's iteration order cannot change the result.
+	bestPrefix, bestTarget := "", ""
+	for prefix, target := range rule.DiscriminatorMap {
+		if strings.HasPrefix(val, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix, bestTarget = prefix, target
+		}
+	}
+	if bestPrefix == "" {
+		return false
+	}
+
+	tail := val[len(bestPrefix):]
+	if tail == "" {
+		return false
+	}
+	ref, ok := reg.AttrReference(bestTarget, tail, rule.TargetAttr)
+	if !ok {
+		return false
+	}
+
+	// A quoted template: the prefix stays a literal, the reference becomes an
+	// interpolation. hclwrite has no builder for a mixed template, so the
+	// tokens are assembled directly.
+	body.SetAttributeRaw(attrName, hclwrite.Tokens{
+		{Type: hclsyntax.TokenOQuote, Bytes: []byte{'"'}},
+		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(bestPrefix)},
+		{Type: hclsyntax.TokenTemplateInterp, Bytes: []byte("${")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(ref)},
+		{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte("}")},
+		{Type: hclsyntax.TokenCQuote, Bytes: []byte{'"'}},
+	})
+	return true
 }

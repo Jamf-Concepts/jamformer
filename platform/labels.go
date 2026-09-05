@@ -18,13 +18,13 @@ func nameAttrForType(resourceType string) string {
 		"jamfplatform_pro_app_request_form_field":
 		return "title"
 	case "jamfplatform_pro_package",
-		"jamfplatform_pro_api_role",
-		"jamfplatform_pro_api_client",
 		"jamfplatform_pro_account_group",
 		"jamfplatform_pro_supervision_identity",
 		"jamfplatform_pro_enrollment_customization",
 		"jamfplatform_pro_computer_prestage_enrollment",
 		"jamfplatform_pro_mobile_device_prestage_enrollment":
+		return "display_name"
+	case "jamfplatform_pro_cloud_identity_provider":
 		return "display_name"
 	case "jamfplatform_pro_account":
 		return "username"
@@ -32,6 +32,19 @@ func nameAttrForType(resourceType string) string {
 		return "extension"
 	case "jamfplatform_pro_removable_mac_address":
 		return "mac_address"
+	// A claimed SSO domain has no name of its own — the domain it claims IS its
+	// identity, and terraform import takes that name in place of an ID.
+	case tAccountSSODomain:
+		return "domain"
+	// The Security Cloud search domain is a per-tenant singleton whose only
+	// attribute is the domain.
+	case tSCDnsSearchDomain:
+		return "domain_name"
+	// A tenant holds one UEM Connect integration, and it has no name of its
+	// own. The vendor it connects to is the only meaningful thing to call it,
+	// and reads as jamf_pro once sanitized.
+	case tSCUemConnect:
+		return "uem_vendor"
 	default:
 		return "name"
 	}
@@ -60,6 +73,10 @@ func platformLabelName(resourceType string, body *hclwrite.Body, _ func() string
 			name = postprocess.ExtractStringValue(attr)
 		}
 	}
+	// Nothing resolved. A predefined Security Cloud ZTNA app is the deliberate
+	// case: it takes its name from the Jamf-maintained definition and carries
+	// none of its own, so the auto-generated label stands rather than every
+	// predefined app collapsing onto one name.
 	if name == "" {
 		return ""
 	}

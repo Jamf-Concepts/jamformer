@@ -67,5 +67,21 @@ type ReferenceRule struct {
 
 	// DiscriminatorMap maps a DiscriminatorAttr value to the TF resource type to
 	// resolve the element's ID against. An unmapped value leaves the ID untouched.
+	//
+	// With PrefixedIDs the keys are literal value prefixes instead of sibling
+	// field values, and the longest matching prefix wins.
 	DiscriminatorMap map[string]string
+
+	// PrefixedIDs indicates the value is an ID carried behind a literal prefix
+	// that also selects the target type, e.g. UEM Connect's uem_group_id, which
+	// is written "computer_12" or "mobile_7" for a Jamf Pro device group.
+	// DiscriminatorMap maps each prefix to the resource type its tail resolves
+	// against; the prefix is preserved and the tail becomes a ${...} reference,
+	// so "computer_12" becomes "computer_${jamfplatform_device_group.x.jamf_pro_id}".
+	//
+	// Used with ElementAttr (per list element) or on its own (a single
+	// attribute). An unmatched prefix, or a tail that resolves to nothing,
+	// leaves the value untouched: unlike a bare ID reference, a prefixed value
+	// is still valid on its own and is not evidence of a broken export.
+	PrefixedIDs bool
 }

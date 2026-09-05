@@ -1,0 +1,51 @@
+name: Gitleaks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history: the scan below is history-mode, so a secret committed
+          # and later removed is still a leak worth failing on.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # The sibling provider repo uses gitleaks/gitleaks-action, which needs an
+      # organisation GITLEAKS_LICENSE and is therefore skipped for fork PRs and
+      # Dependabot, since GitHub withholds secrets from those runs. jamformer
+      # does not need that trade: it already depends on the gitleaks module
+      # directly — the `secrets` package embeds its detection engine — so
+      # installing the binary at the exact version go.mod pins costs nothing,
+      # needs no secret, and runs on every context including forks.
+      #
+      # Reading the version from go.mod rather than pinning it here is the
+      # point: CI then scans with the same engine version the tool itself
+      # ships, so a bump cannot leave the gate testing a different scanner
+      # than the one users get.
+      - name: Install gitleaks at the version go.mod pins
+        run: |
+          set -euo pipefail
+          version="$(go list -m -f '{{.Version}}' github.com/zricethezav/gitleaks/v8)"
+          echo "installing gitleaks $version"
+          go install "github.com/zricethezav/gitleaks/v8@$version"
+
+      # History mode, not directory mode. Directory mode also reads untracked
+      # and gitignored working-tree files, which on a developer machine means
+      # .env and the generated/ output directory — real secrets that were never
+      # committed and are not this gate's business. .gitleaksignore covers the
+      # deliberate fixtures in secrets/scanner_test.go.
+      - name: Scan committed history
+        run: gitleaks git . --no-banner --redact --verbose

@@ -372,6 +372,44 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			continue
 		}
 
+		// Skip a cloud identity provider whose credentials block the provider
+		// did not return. provider_name is a discriminator that requires the
+		// matching nested block (entra_id for ENTRA_ID, google for GOOGLE), and
+		// the list resource hydrates neither — it returns display_name and
+		// provider_name alone. The block holds the directory's client
+		// credentials, which no read exposes, so there is nothing to recover
+		// and nothing to invent. Dropping it keeps the export plannable, the
+		// same call the blueprint-draft skip above makes.
+		if resourceType == "jamfplatform_pro_cloud_identity_provider" {
+			missing, unknown := missingCloudIdPBlock(block.Body())
+			name := labels[1]
+			if nm := block.Body().GetAttribute("display_name"); nm != nil {
+				if v := ExtractStringValue(nm); v != "" {
+					name = v
+				}
+			}
+			// A discriminator this build does not know about cannot be judged,
+			// so the resource stays — but it is said aloud, since the shape
+			// that needs skipping is exactly the one nothing downstream can
+			// repair, and a silent pass would surface as an unexplained plan
+			// failure instead.
+			if unknown && !Quiet {
+				fmt.Printf("  Warning: cloud identity provider %q has an unrecognised provider_name %q — "+
+					"leaving it in place; check its credentials block before applying\n",
+					name, ExtractStringValue(block.Body().GetAttribute("provider_name")))
+			}
+			if missing != "" {
+				if !Quiet {
+					fmt.Printf("  Skipping cloud identity provider %q: the provider returned no %s block "+
+						"(it carries credentials no read exposes)\n", name, missing)
+				}
+				addr := resourceType + "." + labels[1]
+				_ = terraform.RemoveImportBlock(outputDir, addr)
+				skippedAddrs[addr] = true
+				continue
+			}
+		}
+
 		// Wire Required WriteOnly secrets the server never returns to sensitive
 		// variables (and seed their _wo_version companions) so the config validates.
 		if opts.InjectRequiredWriteOnly && schema != nil {
@@ -725,6 +763,45 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	terraform.FormatDir(outputDir)
 
 	return nil
+}
+
+// cloudIdPBlockForProvider maps a cloud identity provider's provider_name
+// discriminator to the nested attribute that must accompany it.
+var cloudIdPBlockForProvider = map[string]string{
+	"ENTRA_ID": "entra_id",
+	"GOOGLE":   "google",
+}
+
+// missingCloudIdPBlock returns the name of the credentials block a cloud
+// identity provider's provider_name requires but which is absent or null, or ""
+// when nothing is missing.
+//
+// unknown reports a provider_name the map above does not cover — a third IdP
+// type, or a renamed discriminator. That case cannot be judged either way: the
+// block it needs has no name here, so neither the skip nor the all-clear is
+// honest, and the caller says so out loud. Falling through silently was the
+// worse answer, because the auto-fix cannot repair this shape — the missing
+// block holds credentials no read exposes, so there is nothing to remove and
+// nothing to invent — and the export would ship a resource that will not plan
+// with no indication of why.
+func missingCloudIdPBlock(body *hclwrite.Body) (missing string, unknown bool) {
+	attr := body.GetAttribute("provider_name")
+	if attr == nil {
+		// No discriminator to read. Whatever is wrong with the resource, it is
+		// not this check's to name — provider_name is Required, so the
+		// validation auto-fix reports it in its own terms.
+		return "", false
+	}
+	name := ExtractStringValue(attr)
+	required, ok := cloudIdPBlockForProvider[name]
+	if !ok {
+		return "", true
+	}
+	block := body.GetAttribute(required)
+	if block == nil || isNullAttr(block) {
+		return required, false
+	}
+	return "", false
 }
 
 // hasEmptyDeviceGroups reports whether a blueprint's device_groups list is

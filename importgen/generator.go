@@ -215,13 +215,50 @@ variable "jamfprotect_client_secret" {
 }
 
 // PlatformCredentials holds Jamf Platform auth details for generating tfvars.
+//
+// EnvironmentID and TenantID are mutually exclusive: an API integration targets
+// one or the other, and the provider rejects both together with a "Conflicting
+// API Integration Scope" error. Both empty is organization scope, where the
+// gateway resolves the organization from the access token and neither attribute
+// is written at all — that is how the provider itself selects it, so an empty
+// attribute must be omitted rather than emitted as "".
 type PlatformCredentials struct {
 	BaseURL         string
 	ClientID        string
 	ClientSecret    string
-	TenantID        string // optional; when set, added to provider block and tfvars
+	EnvironmentID   string // preferred scope; written as environment_id
+	TenantID        string // legacy scope; written as tenant_id
 	ProviderVersion string // user-specified exact pin (empty = use latest)
 	ResolvedVersion string // version resolved by terraform init (for >= constraint)
+}
+
+// scopeAttr returns the provider attribute line for the credentials' scope, the
+// variable declaration for it, and the tfvars assignment. Organization scope
+// returns empty strings for all three: setting neither attribute is what
+// selects it.
+func (c *PlatformCredentials) scopeAttr() (providerLine, varBlock, tfvarsLine string) {
+	switch {
+	case c.EnvironmentID != "":
+		return "\n  environment_id = var.jamfplatform_environment_id",
+			`
+variable "jamfplatform_environment_id" {
+  description = "Jamf Platform environment ID — the Platform environment this API integration targets"
+  type        = string
+}
+`,
+			fmt.Sprintf("jamfplatform_environment_id = %q\n", c.EnvironmentID)
+	case c.TenantID != "":
+		return "\n  tenant_id     = var.jamfplatform_tenant_id",
+			`
+variable "jamfplatform_tenant_id" {
+  description = "Jamf Platform tenant ID (legacy scope; prefer environment_id for new integrations)"
+  type        = string
+}
+`,
+			fmt.Sprintf("jamfplatform_tenant_id = %q\n", c.TenantID)
+	}
+	// Organization scope: no identifier is supplied.
+	return "", "", ""
 }
 
 // JSCCredentials holds JSC (Jamf Security Cloud) auth details for generating tfvars.
@@ -318,6 +355,7 @@ func GeneratePlatform(outputDir string, creds *PlatformCredentials) error {
 // variables.tf and terraform.tfvars. Call after terraform plan/query.
 func FinalizePlatform(outputDir string, creds *PlatformCredentials) error {
 	versionLine := formatVersionLine(creds.ProviderVersion, creds.ResolvedVersion)
+	scopeLine, scopeVar, scopeTfvar := creds.scopeAttr()
 
 	providerTF := fmt.Sprintf(`terraform {
   required_providers {
@@ -330,16 +368,15 @@ func FinalizePlatform(outputDir string, creds *PlatformCredentials) error {
 provider "jamfplatform" {
   base_url      = var.jamfplatform_base_url
   client_id     = var.jamfplatform_client_id
-  client_secret = var.jamfplatform_client_secret
-  tenant_id     = var.jamfplatform_tenant_id
+  client_secret = var.jamfplatform_client_secret%s
 }
-`, versionLine)
+`, versionLine, scopeLine)
 	if err := os.WriteFile(filepath.Join(outputDir, "provider.tf"), []byte(providerTF), 0644); err != nil {
 		return fmt.Errorf("writing provider.tf: %w", err)
 	}
 
 	variablesTF := `variable "jamfplatform_base_url" {
-  description = "Jamf Platform API gateway base URL (e.g. https://us.apigw.jamf.com)"
+  description = "Jamf Platform API gateway host (e.g. https://us.api.jamfcloud.com, or eu. / apac.)"
   type        = string
 }
 
@@ -354,17 +391,12 @@ variable "jamfplatform_client_secret" {
   type        = string
   sensitive   = true
 }
-
-variable "jamfplatform_tenant_id" {
-  description = "Jamf Platform tenant ID"
-  type        = string
-}
-`
+` + scopeVar
 	if err := os.WriteFile(filepath.Join(outputDir, "variables.tf"), []byte(variablesTF), 0644); err != nil {
 		return fmt.Errorf("writing variables.tf: %w", err)
 	}
 
-	tfvars := fmt.Sprintf("jamfplatform_base_url  = %q\njamfplatform_tenant_id = %q\n", creds.BaseURL, creds.TenantID)
+	tfvars := fmt.Sprintf("jamfplatform_base_url = %q\n", creds.BaseURL) + scopeTfvar
 	return os.WriteFile(filepath.Join(outputDir, "terraform.tfvars"), []byte(tfvars), 0644)
 }
 
