@@ -400,11 +400,7 @@ func TestRenameLabels_TypeSpecificNameAttrs(t *testing.T) {
 	dir := t.TempDir()
 	generatedFile := filepath.Join(dir, "generated.tf")
 
-	src := `resource "jamfplatform_pro_api_role" "all_0" {
-  display_name = "portalsync"
-}
-
-resource "jamfplatform_pro_account" "all_1" {
+	src := `resource "jamfplatform_pro_account" "all_1" {
   username = "ben.toms@jamf.com"
 }
 
@@ -436,7 +432,6 @@ resource "jamfplatform_pro_ldap_server" "all_5" {
 	body := string(result)
 
 	for _, want := range []string{
-		`"jamfplatform_pro_api_role" "portalsync"`,
 		`"jamfplatform_pro_account" "ben_toms_jamf_com"`,
 		`"jamfplatform_pro_allowed_file_extension" "xlt"`,
 		`"jamfplatform_pro_app_request_form_field" "my_field"`,

@@ -31,6 +31,7 @@ import (
 	protectclient "github.com/Jamf-Concepts/jamformer/protect/client"
 	"github.com/Jamf-Concepts/jamformer/secrets"
 	"github.com/Jamf-Concepts/jamformer/terraform"
+	"github.com/Jamf-Concepts/jamformer/update"
 )
 
 // version, commit, and date are set at build time via -ldflags
@@ -481,7 +482,12 @@ func main() {
 	password := new(string)
 	clientID := new(string)
 	clientSecret := new(string)
-	tenantID := new(string) // Jamf Platform only (JAMF_TENANT_ID)
+	// Jamf Platform scope. An API integration targets exactly one of an
+	// environment or a tenant, or neither for organization scope; the two IDs
+	// are mutually exclusive and ResolveScope enforces that.
+	environmentID := new(string) // JAMF_ENVIRONMENT_ID / JAMFPLATFORM_ENVIRONMENT_ID
+	tenantID := new(string)      // JAMF_TENANT_ID / JAMFPLATFORM_TENANT_ID (legacy)
+	platformScope := platform.Scope{}
 	terraformPath := flag.String("terraform-path", "", "Path to terraform binary (skip auto-download) [env: JAMFORMER_TERRAFORM_PATH]")
 	outputDir := flag.String("output", "generated", "Output directory for generated Terraform project [env: JAMFORMER_OUTPUT]")
 	verbose := flag.Bool("verbose", false, "Show terraform command output [env: JAMFORMER_VERBOSE]")
@@ -509,7 +515,8 @@ func main() {
 
 	// Handle -version / -v early exit
 	if *showVersion || *showVersionShort {
-		fmt.Printf("jamformer %s\n  commit: %s\n  built:  %s\n", version, commit, date)
+		fmt.Printf("jamformer %s\n  commit: %s\n  built:  %s\n  install: %s\n",
+			version, commit, date, update.DetectInstallMethod())
 		os.Exit(0)
 	}
 
@@ -525,6 +532,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Start the update check now so its latency overlaps the prompting and
+	// authentication that follow. It is advisory and never blocks a run: the
+	// result is collected with a short grace period later, and a check that has
+	// not finished by then is dropped.
+	updateCheck := startUpdateCheck()
+
 	// Apply environment variable defaults for unset flags
 	if *url == "" {
 		*url = os.Getenv("JAMF_URL")
@@ -535,7 +548,23 @@ func main() {
 	*password = os.Getenv("JAMF_PASSWORD")
 	*clientID = os.Getenv("JAMF_CLIENT_ID")
 	*clientSecret = os.Getenv("JAMF_CLIENT_SECRET")
+	*environmentID = os.Getenv("JAMF_ENVIRONMENT_ID")
 	*tenantID = os.Getenv("JAMF_TENANT_ID")
+	// The Jamf Platform provider reads its own JAMFPLATFORM_* variables. Accept
+	// them as fallbacks so a shell already set up to run `terraform` against a
+	// tenant needs no second set of exports; the JAMF_* name wins where both
+	// are present.
+	if isPlatformProvider(*providerFlag) {
+		if *clientID == "" {
+			*clientID = os.Getenv("JAMFPLATFORM_CLIENT_ID")
+		}
+		if *clientSecret == "" {
+			*clientSecret = os.Getenv("JAMFPLATFORM_CLIENT_SECRET")
+		}
+		if *url == "" {
+			*url = os.Getenv("JAMFPLATFORM_BASE_URL")
+		}
+	}
 	if !*verbose && os.Getenv("JAMFORMER_VERBOSE") == "true" {
 		*verbose = true
 	}
@@ -738,9 +767,13 @@ func main() {
 		printSplash()
 	}
 
+	// Advise on a newer release before the export starts, so the user can stop
+	// and upgrade rather than discover it afterwards.
+	reportUpdateNotice(updateCheck)
+
 	// Interactive prompts if required fields are missing
 	// (skipped in multi-env mode — credentials are resolved per-env)
-	if !isMultiEnv && (*url == "" || authMethod == "" || (isPlatform && *tenantID == "")) {
+	if !isMultiEnv && (*url == "" || authMethod == "" || (isPlatform && needsScopePrompt(*environmentID, *tenantID))) {
 		if !interactive {
 			var missing []string
 			if *url == "" {
@@ -755,9 +788,6 @@ func main() {
 					missing = append(missing, "JAMF_USERNAME + JAMF_PASSWORD (or JAMF_CLIENT_ID + JAMF_CLIENT_SECRET)")
 				}
 			}
-			if isPlatform && *tenantID == "" {
-				missing = append(missing, "JAMF_TENANT_ID")
-			}
 			log.Fatalf("Missing required credentials in non-interactive mode: %s\nSet via environment variables (or -url flag for URL).", strings.Join(missing, ", "))
 		}
 
@@ -766,7 +796,7 @@ func main() {
 		if *url == "" {
 			switch {
 			case isPlatform:
-				*url = promptLine(reader, fmt.Sprintf("Jamf Platform API gateway URL %s(e.g. https://us.apigw.jamf.com)%s: ", uDim, uReset))
+				*url = promptLine(reader, fmt.Sprintf("Jamf Platform API gateway host %s(e.g. https://us.api.jamfcloud.com, or eu. / apac.)%s: ", uDim, uReset))
 			case isProtect:
 				*url = promptLine(reader, fmt.Sprintf("Jamf Protect URL %s(e.g. your-tenant.protect.jamfcloud.com)%s: ", uDim, uReset))
 			case isJSC:
@@ -803,8 +833,20 @@ func main() {
 			}
 		}
 
-		if isPlatform && *tenantID == "" {
-			*tenantID = promptLine(reader, "Tenant ID: ")
+		// Scope. An integration is registered at exactly one of three scopes and
+		// cannot be re-scoped afterwards, so this asks which one rather than
+		// assuming, and accepts an empty answer as organization scope.
+		if isPlatform && *environmentID == "" && *tenantID == "" &&
+			os.Getenv("JAMFPLATFORM_ORGANIZATION_ID") == "" && os.Getenv("JAMF_ORGANIZATION_ID") == "" {
+			fmt.Printf("\n%sAPI integration scope%s — chosen when the integration was created in Jamf Account.\n", uBold, uReset)
+			fmt.Printf("  %sEnvironment%s (preferred) reaches everything except Jamf Account.\n", uBold, uReset)
+			fmt.Printf("  %sTenant%s (legacy) reaches Jamf Pro and Security Cloud, but not Blueprints,\n", uBold, uReset)
+			fmt.Printf("  Compliance Benchmarks or AI Governance.\n")
+			fmt.Printf("  %sOrganization%s reaches only the Jamf Account SSO resources. Leave both blank for it.\n\n", uBold, uReset)
+			*environmentID = promptLine(reader, fmt.Sprintf("Environment ID %s(blank if not environment-scoped)%s: ", uDim, uReset))
+			if *environmentID == "" {
+				*tenantID = promptLine(reader, fmt.Sprintf("Tenant ID %s(blank for organization scope)%s: ", uDim, uReset))
+			}
 		}
 	}
 
@@ -839,8 +881,13 @@ func main() {
 	default:
 		log.Fatal("No authentication credentials provided")
 	}
-	if !isMultiEnv && isPlatform && *tenantID == "" {
-		log.Fatal("Jamf Platform requires a tenant ID (JAMF_TENANT_ID)")
+	if !isMultiEnv && isPlatform {
+		var scopeErr error
+		platformScope, scopeErr = platform.ResolveScope(*environmentID, *tenantID)
+		if scopeErr != nil {
+			log.Fatalf("%v", scopeErr)
+		}
+		reportPlatformScope(platformScope, selectedResources, quiet)
 	}
 
 	// Verify authentication before proceeding with interactive prompts / terraform download
@@ -869,7 +916,8 @@ func main() {
 		} else if !interactive || *verbose {
 			fmt.Println("Verifying authentication...")
 		}
-		if err := platformclient.VerifyAuth(*url, *clientID, *clientSecret, *tenantID); err != nil {
+		if err := platformclient.VerifyAuth(*url, *clientID, *clientSecret,
+			platformclient.Scope{EnvironmentID: platformScope.EnvironmentID(), TenantID: platformScope.TenantID()}); err != nil {
 			log.Fatalf("Authentication failed: %v", err)
 		}
 	} else if isJSC {
@@ -1060,7 +1108,7 @@ func main() {
 			BaseURL:              *url,
 			ClientID:             *clientID,
 			ClientSecret:         *clientSecret,
-			TenantID:             *tenantID,
+			Scope:                platformScope,
 			SelectedResources:    selectedResources,
 			SkipReferences:       *skipReferences,
 			SkipPackageDownloads: *skipPackageDownloads,
@@ -1518,9 +1566,9 @@ func resolveMultiEnvCredentials(provider string, envNames []string, interactive 
 }
 
 // resolvePlatformMultiEnvCredentials resolves per-env Jamf Platform credentials.
-// Jamf Platform is OAuth2 only and uses a regional API gateway base URL (no
-// .jamfcloud shorthand). The tenant ID is optional (enables packages, Jamf
-// Connect, and Self Service branding-image downloads).
+// Jamf Platform is OAuth2 only and uses a regional API gateway host (no
+// .jamfcloud shorthand). Each environment carries its own scope: an environment
+// ID (preferred), a tenant ID (legacy), or neither for organization scope.
 func resolvePlatformMultiEnvCredentials(envNames []string, interactive bool) ([]multienv.EnvConfig, error) {
 	var configs []multienv.EnvConfig
 	for _, name := range envNames {
@@ -1531,14 +1579,30 @@ func resolvePlatformMultiEnvCredentials(envNames []string, interactive bool) ([]
 			URL:          os.Getenv("JAMF_URL_" + upper),
 			ClientID:     os.Getenv("JAMF_CLIENT_ID_" + upper),
 			ClientSecret: os.Getenv("JAMF_CLIENT_SECRET_" + upper),
-			TenantID:     os.Getenv("JAMF_TENANT_ID_" + upper),
+			// Scope per environment: the preferred environment ID, or the
+			// legacy tenant ID. Neither is organization scope.
+			EnvironmentID: firstNonEmpty(os.Getenv("JAMF_ENVIRONMENT_ID_"+upper), os.Getenv("JAMFPLATFORM_ENVIRONMENT_ID_"+upper)),
+			TenantID:      firstNonEmpty(os.Getenv("JAMF_TENANT_ID_"+upper), os.Getenv("JAMFPLATFORM_TENANT_ID_"+upper)),
+		}
+		if env.ClientID == "" {
+			env.ClientID = os.Getenv("JAMFPLATFORM_CLIENT_ID_" + upper)
+		}
+		if env.ClientSecret == "" {
+			env.ClientSecret = os.Getenv("JAMFPLATFORM_CLIENT_SECRET_" + upper)
+		}
+		if env.URL == "" {
+			env.URL = os.Getenv("JAMFPLATFORM_BASE_URL_" + upper)
+		}
+		if env.EnvironmentID != "" && env.TenantID != "" {
+			return nil, fmt.Errorf("conflicting API integration scope for environment %q: both "+
+				"JAMF_ENVIRONMENT_ID_%s and JAMF_TENANT_ID_%s are set, but an integration targets one or the other", name, upper, upper)
 		}
 
 		if (env.URL == "" || env.ClientID == "" || env.ClientSecret == "") && interactive {
 			reader := bufio.NewReader(os.Stdin)
 			fmt.Printf("\n%sEnvironment: %s%s\n", uBold, name, uReset)
 			if env.URL == "" {
-				env.URL = promptLine(reader, fmt.Sprintf("  Jamf Platform base URL %s(e.g. https://us.apigw.jamf.com)%s: ", uDim, uReset))
+				env.URL = promptLine(reader, fmt.Sprintf("  Jamf Platform gateway host %s(e.g. https://us.api.jamfcloud.com)%s: ", uDim, uReset))
 			}
 			if env.ClientID == "" {
 				env.ClientID = promptLine(reader, "  API Client ID: ")
@@ -1546,8 +1610,11 @@ func resolvePlatformMultiEnvCredentials(envNames []string, interactive bool) ([]
 			if env.ClientSecret == "" {
 				env.ClientSecret = promptPassword("  API Client Secret: ")
 			}
-			if env.TenantID == "" {
-				env.TenantID = promptLine(reader, fmt.Sprintf("  Tenant ID %s(optional, enables packages/Jamf Connect/branding)%s: ", uDim, uReset))
+			if env.EnvironmentID == "" && env.TenantID == "" {
+				env.EnvironmentID = promptLine(reader, fmt.Sprintf("  Environment ID %s(preferred; blank to use a tenant ID)%s: ", uDim, uReset))
+				if env.EnvironmentID == "" {
+					env.TenantID = promptLine(reader, fmt.Sprintf("  Tenant ID %s(legacy; blank for organization scope)%s: ", uDim, uReset))
+				}
 			}
 		}
 

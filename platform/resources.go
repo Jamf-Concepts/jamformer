@@ -15,20 +15,66 @@ import (
 
 // ResourceDef describes a single Jamf Platform resource type.
 type ResourceDef struct {
-	FilterKey         string // key for -include-resources / -exclude-resources
-	DisplayName       string // human-readable name for prompts and output
-	TFType            string // Terraform resource type name
-	OutputFile        string // filename in the output directory
-	IsSingleton       bool   // true for tenant-wide settings imported by a fixed ID
-	SingletonImportID string // import ID for singletons (e.g. "singleton")
+	FilterKey         string   // key for -include-resources / -exclude-resources
+	DisplayName       string   // human-readable name for prompts and output
+	TFType            string   // Terraform resource type name
+	OutputFile        string   // filename in the output directory
+	IsSingleton       bool     // true for tenant-wide settings imported by a fixed ID
+	SingletonImportID string   // import ID for singletons (e.g. "singleton")
+	Scopes            ScopeSet // API integration scopes this resource is reachable at
 }
 
 // nativeResources are the Jamf Platform Services resources (not Jamf Pro
 // federated objects).
 var nativeResources = []ResourceDef{
-	{FilterKey: "blueprints", DisplayName: "Blueprints", TFType: "jamfplatform_blueprints_blueprint", OutputFile: "blueprints.tf"},
-	{FilterKey: "compliance_benchmarks", DisplayName: "Compliance Benchmarks", TFType: "jamfplatform_cbengine_benchmark", OutputFile: "compliance_benchmarks.tf"},
-	{FilterKey: "device_groups", DisplayName: "Device Groups", TFType: "jamfplatform_device_group", OutputFile: "device_groups.tf"},
+	// Blueprints and Compliance Benchmarks are environment-only: their GA
+	// specifications deleted the tenant header, and their permissions cannot be
+	// selected for a tenant-scoped integration, so the provider refuses them at
+	// configure time under any other scope.
+	{FilterKey: "blueprints", DisplayName: "Blueprints", TFType: "jamfplatform_blueprints_blueprint", OutputFile: "blueprints.tf", Scopes: ScopeSetEnvOnly},
+	{FilterKey: "compliance_benchmarks", DisplayName: "Compliance Benchmarks", TFType: "jamfplatform_cbengine_benchmark", OutputFile: "compliance_benchmarks.tf", Scopes: ScopeSetEnvOnly},
+	// Device groups are a Platform inventory construct: the specification
+	// declares environment scope, but the gateway goes on serving X-Tenant-Id,
+	// and the provider accepts the wider set.
+	{FilterKey: "device_groups", DisplayName: "Device Groups", TFType: "jamfplatform_device_group", OutputFile: "device_groups.tf", Scopes: ScopeSetTenantOrEnv},
+}
+
+// listableAIGov are the Jamf AI Governance resources discoverable via
+// `terraform query`. Environment scope only — the one family the provider
+// itself gates on scope.
+var listableAIGov = []ResourceDef{
+	{FilterKey: "ai_governance_policies", DisplayName: "AI Governance Policies", TFType: "jamfplatform_ai_governance_policy", OutputFile: "ai_governance_policies.tf", Scopes: ScopeSetEnvOnly},
+}
+
+// listableAccount are the Jamf Account (single sign-on) resources. Organization
+// scope only, and the only family that scope reaches. Served from the US
+// gateway alone.
+var listableAccount = []ResourceDef{
+	{FilterKey: "account_sso_domains", DisplayName: "Jamf Account SSO Domains", TFType: "jamfplatform_account_sso_domain", OutputFile: "account_sso_domains.tf", Scopes: ScopeSetOrgOnly},
+	{FilterKey: "account_sso_connections", DisplayName: "Jamf Account SSO Connections", TFType: "jamfplatform_account_sso_connection", OutputFile: "account_sso_connections.tf", Scopes: ScopeSetOrgOnly},
+}
+
+// listableSecurityCloud are the Jamf Security Cloud resources discoverable via
+// `terraform query`. Reachable at either environment or tenant scope.
+//
+// jamfplatform_security_cloud_activation_profile is deliberately absent: it
+// models a deliberately small part of a profile, has no import support and no
+// drift detection, so there is nothing an export could adopt.
+var listableSecurityCloud = []ResourceDef{
+	{FilterKey: "security_cloud_device_groups", DisplayName: "Security Cloud Device Groups", TFType: tSCDeviceGroup, OutputFile: "security_cloud_device_groups.tf", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_ztna_gateways", DisplayName: "Security Cloud ZTNA Gateways", TFType: tSCZtnaGateway, OutputFile: "security_cloud_ztna_gateways.tf", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_ztna_grouped_gateways", DisplayName: "Security Cloud ZTNA Grouped Gateways", TFType: tSCZtnaGroupedGateway, OutputFile: "security_cloud_ztna_grouped_gateways.tf", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_ztna_apps", DisplayName: "Security Cloud ZTNA Apps", TFType: tSCZtnaApp, OutputFile: "security_cloud_ztna_apps.tf", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_dns_zones", DisplayName: "Security Cloud Custom DNS Zones", TFType: tSCDnsZone, OutputFile: "security_cloud_dns_zones.tf", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_uem_connect", DisplayName: "Security Cloud UEM Connect", TFType: tSCUemConnect, OutputFile: "security_cloud_uem_connect.tf", Scopes: ScopeSetTenantOrEnv},
+}
+
+// singletonSecurityCloud are the per-tenant Jamf Security Cloud settings. Each
+// is imported by the fixed ID "singleton" and its config recovered via
+// `terraform plan -generate-config-out`, exactly like the Jamf Pro singletons.
+var singletonSecurityCloud = []ResourceDef{
+	{FilterKey: "security_cloud_dns_search_domain", DisplayName: "Security Cloud DNS Search Domain", TFType: tSCDnsSearchDomain, OutputFile: "security_cloud_dns_search_domain.tf", IsSingleton: true, SingletonImportID: "singleton", Scopes: ScopeSetTenantOrEnv},
+	{FilterKey: "security_cloud_dns_hostname_mappings", DisplayName: "Security Cloud DNS Hostname Mappings", TFType: tSCDnsHostnameMappings, OutputFile: "security_cloud_dns_hostname_mappings.tf", IsSingleton: true, SingletonImportID: "singleton", Scopes: ScopeSetTenantOrEnv},
 }
 
 // listablePro are the Jamf Pro objects federated into the Platform provider that
@@ -42,8 +88,6 @@ var listablePro = []struct{ suffix, display string }{
 	{"pro_advanced_user_search", "Advanced User Searches"},
 	{"pro_advanced_volume_purchasing_content_search", "Advanced VPP Content Searches"},
 	{"pro_allowed_file_extension", "Allowed File Extensions"},
-	{"pro_api_client", "API Clients"},
-	{"pro_api_role", "API Roles"},
 	{"pro_app_installer", "App Installers"},
 	{"pro_app_request_form_field", "App Request Form Fields"},
 	{"pro_automated_device_enrollment", "Automated Device Enrollments"},
@@ -136,14 +180,22 @@ var singletonPro = []struct{ suffix, display string }{
 var Resources = buildResources()
 
 func buildResources() []ResourceDef {
-	r := make([]ResourceDef, 0, len(nativeResources)+len(listablePro)+len(singletonPro))
+	r := make([]ResourceDef, 0, len(nativeResources)+len(listableAIGov)+len(listableAccount)+
+		len(listableSecurityCloud)+len(singletonSecurityCloud)+len(listablePro)+len(singletonPro))
 	r = append(r, nativeResources...)
+	r = append(r, listableAIGov...)
+	r = append(r, listableAccount...)
+	r = append(r, listableSecurityCloud...)
+	r = append(r, singletonSecurityCloud...)
+	// The federated Jamf Pro surface is published at both environment and
+	// tenant scope, so every pro_* entry carries the same ScopeSet.
 	for _, e := range listablePro {
 		r = append(r, ResourceDef{
 			FilterKey:   strings.TrimPrefix(e.suffix, "pro_"),
 			DisplayName: e.display,
 			TFType:      "jamfplatform_" + e.suffix,
 			OutputFile:  e.suffix + ".tf",
+			Scopes:      ScopeSetTenantOrEnv,
 		})
 	}
 	for _, e := range singletonPro {
@@ -154,9 +206,37 @@ func buildResources() []ResourceDef {
 			OutputFile:        e.suffix + ".tf",
 			IsSingleton:       true,
 			SingletonImportID: "singleton",
+			Scopes:            ScopeSetTenantOrEnv,
 		})
 	}
 	return r
+}
+
+// ResourcesForScope returns the resource defs reachable under the given scope,
+// in Resources-table order. Everything else is unreachable with the configured
+// credentials: the provider refuses it at configure time, so querying it would
+// fail the whole run rather than skip one type.
+func ResourcesForScope(k ScopeKind) []ResourceDef {
+	var out []ResourceDef
+	for _, r := range Resources {
+		if r.Scopes.Reachable(k) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// UnreachableForScope returns the resource defs the given scope cannot reach,
+// so a run can report what it is skipping and why rather than silently
+// exporting less than the user asked for.
+func UnreachableForScope(k ScopeKind) []ResourceDef {
+	var out []ResourceDef
+	for _, r := range Resources {
+		if !r.Scopes.Reachable(k) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // TypeToFileMap returns a map of TF resource type → output filename,
@@ -269,6 +349,25 @@ const (
 	tPatchSource   = "jamfplatform_pro_patch_external_source"
 )
 
+// Jamf Security Cloud target type names.
+const (
+	tSCDeviceGroup         = "jamfplatform_security_cloud_device_group"
+	tSCZtnaGateway         = "jamfplatform_security_cloud_ztna_gateway"
+	tSCZtnaGroupedGateway  = "jamfplatform_security_cloud_ztna_grouped_gateway"
+	tSCZtnaApp             = "jamfplatform_security_cloud_ztna_app"
+	tSCDnsZone             = "jamfplatform_security_cloud_dns_zone"
+	tSCUemConnect          = "jamfplatform_security_cloud_uem_connect"
+	tSCDnsSearchDomain     = "jamfplatform_security_cloud_dns_search_domain"
+	tSCDnsHostnameMappings = "jamfplatform_security_cloud_dns_hostname_mappings"
+)
+
+// Jamf Account and AI Governance target type names.
+const (
+	tAccountSSODomain     = "jamfplatform_account_sso_domain"
+	tAccountSSOConnection = "jamfplatform_account_sso_connection"
+	tAIGovPolicy          = "jamfplatform_ai_governance_policy"
+)
+
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
 // the federated Jamf Pro resources, whose content lives in plugin-framework
 // nested attributes (object expressions).
@@ -327,6 +426,17 @@ func ExtractSpecs() []postprocess.ExtractSpec {
 			OutputSubdir: "printers",
 			FileKind:     postprocess.FileKindRaw,
 			Ext:          ".ppd",
+		},
+		// AI Governance policies: the tool vendor's own settings body, a JSON
+		// object string. Long enough to dominate the resource block, and far
+		// more readable as a file the provider compares as JSON — so
+		// reindenting the extracted file produces no plan change.
+		{
+			ResourceType: tAIGovPolicy,
+			AttrName:     "settings_json",
+			OutputSubdir: "ai_governance_policies",
+			FileKind:     postprocess.FileKindRaw,
+			Ext:          ".json",
 		},
 		// Mobile device provisioning profiles: the base64 signed .mobileprovision
 		// at top-level profile_data. Distributable signed document (not a secret);
@@ -441,7 +551,10 @@ func DefaultRules() []postprocess.ReferenceRule {
 		// Platform UUIDs in quoted-literal sets; resolve each to a ${...id}
 		// interpolation so the condition tracks the group it points at.
 		{ResourceType: "jamfplatform_blueprints_blueprint", AttrName: "activation_conditions", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", EmbeddedIDs: true},
-		{ResourceType: "jamfplatform_cbengine_benchmark", AttrName: "target_device_group", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id"},
+		// GA renamed the singular target_device_group to a set of device group
+		// identifiers. The provider folds a singular value in during its state
+		// upgrade, but generated config carries the new plural attribute.
+		{ResourceType: "jamfplatform_cbengine_benchmark", AttrName: "target_device_groups", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", IsList: true},
 
 		// --- Policy ---
 		cat(policy, "general"),
@@ -719,6 +832,41 @@ func DefaultRules() []postprocess.ReferenceRule {
 				"OS_X_EBOOK":          ebook,
 			},
 			TargetAttr: "id",
+		},
+
+		// --- Jamf Security Cloud ---
+		// A gateway reference accepts a dedicated gateway, a grouped gateway, or
+		// one of Jamf's own shared gateways. The shared ones are a Jamf-maintained
+		// catalogue with no resource to point at, so they stay as raw IDs;
+		// ResolveAny tries both of the types an export can own.
+		{ResourceType: tSCZtnaApp, AttrName: "device_group_ids", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id", IsList: true},
+		{ResourceType: tSCZtnaApp, AttrPath: []string{"routing"}, AttrName: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id"},
+		{ResourceType: tSCZtnaApp, AttrName: "routing_overrides", ElementAttr: "device_group_ids", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id", IsList: true},
+		// Grouped-gateway members are always the tenant's own dedicated gateways
+		// (a shared gateway is refused), so this resolves to one type only.
+		{ResourceType: tSCZtnaGroupedGateway, AttrName: "gateway_ids", TargetTypes: []string{tSCZtnaGateway}, TargetAttr: "id", IsList: true},
+		// Each authoritative name server names the gateway it is reached through.
+		{ResourceType: tSCDnsZone, AttrName: "authoritative_name_servers", ElementAttr: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id"},
+		// UEM Connect group membership: the Security Cloud side of each mapping,
+		// plus the default group unmatched devices join.
+		{ResourceType: tSCUemConnect, AttrPath: []string{"group_membership_mapping"}, AttrName: "default_security_cloud_group_id", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id"},
+		{ResourceType: tSCUemConnect, AttrPath: []string{"group_membership_mapping"}, AttrName: "mappings", ElementAttr: "security_cloud_group_id", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id"},
+		// The Jamf Pro side of each mapping is written "computer_<n>" / "mobile_<n>",
+		// where <n> is the group's Jamf Pro ID. PrefixedIDs resolves the numeric
+		// tail against the matching device-group flavour and rebuilds the value as
+		// an interpolation, so the mapping tracks the group rather than pinning a
+		// number that stops matching if the group is ever recreated.
+		{
+			ResourceType: tSCUemConnect,
+			AttrPath:     []string{"group_membership_mapping"},
+			AttrName:     "mappings",
+			ElementAttr:  "uem_group_id",
+			PrefixedIDs:  true,
+			DiscriminatorMap: map[string]string{
+				"computer_": DeviceGroupComputerType,
+				"mobile_":   DeviceGroupMobileType,
+			},
+			TargetAttr: "jamf_pro_id",
 		},
 	}
 

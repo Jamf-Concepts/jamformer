@@ -2,7 +2,10 @@
 
 package platform
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPlatformTypeToFileMap(t *testing.T) {
 	m := TypeToFileMap()
@@ -27,12 +30,13 @@ func TestPlatformTypeToFileMap(t *testing.T) {
 		}
 	}
 
-	// 3 native + 60 listable pro_* + 27 singleton pro_* + 3 with no list
-	// resource: synthesised jamfplatform_pro_icon, SDK-discovered
+	// 70 listable (3 native + 1 AI Governance + 2 Jamf Account + 6 Security
+	// Cloud + 58 pro_*) + 29 singletons (27 pro_* + 2 Security Cloud) + 3 with
+	// no list resource: synthesised jamfplatform_pro_icon, SDK-discovered
 	// jamfplatform_pro_jamf_connect, and synthesised
-	// jamfplatform_pro_self_service_branding_image = 93.
-	if got := len(m); got != 93 {
-		t.Errorf("TypeToFileMap has %d entries, expected 93", got)
+	// jamfplatform_pro_self_service_branding_image = 102.
+	if got := len(m); got != 102 {
+		t.Errorf("TypeToFileMap has %d entries, expected 102", got)
 	}
 	if _, ok := m["jamfplatform_pro_icon"]; !ok {
 		t.Error("missing file mapping for synthesised jamfplatform_pro_icon")
@@ -46,11 +50,112 @@ func TestPlatformTypeToFileMap(t *testing.T) {
 }
 
 func TestPlatformResourceCounts(t *testing.T) {
-	if got := len(ListableResources()); got != 63 {
-		t.Errorf("expected 63 listable resources (3 native + 60 pro_*), got %d", got)
+	// Matches the 70 list resources the provider publishes at v0.30.0:
+	// 3 native Platform Services + 1 AI Governance + 2 Jamf Account +
+	// 6 Security Cloud + 58 federated pro_*.
+	if got := len(ListableResources()); got != 70 {
+		t.Errorf("expected 70 listable resources, got %d", got)
 	}
-	if got := len(SingletonResources()); got != 27 {
-		t.Errorf("expected 27 singleton resources, got %d", got)
+	// 27 federated Jamf Pro settings + the 2 per-tenant Security Cloud
+	// Custom DNS resources (search domain, hostname mappings).
+	if got := len(SingletonResources()); got != 29 {
+		t.Errorf("expected 29 singleton resources, got %d", got)
+	}
+}
+
+// The Platform API GA unpublished /v1/api-integrations and /v1/api-roles for
+// security hardening, and the provider removed both resources along with their
+// list resources. An export must not emit either: a list block for a type the
+// provider no longer implements fails the whole query.
+func TestRemovedAtGAAreAbsent(t *testing.T) {
+	for _, removed := range []string{"jamfplatform_pro_api_client", "jamfplatform_pro_api_role"} {
+		if _, ok := TypeToFileMap()[removed]; ok {
+			t.Errorf("%s was removed at the Platform API GA but is still in TypeToFileMap", removed)
+		}
+		for _, r := range Resources {
+			if r.TFType == removed {
+				t.Errorf("%s was removed at the Platform API GA but is still in the Resources table", removed)
+			}
+		}
+	}
+}
+
+// Every resource must declare the scopes it is reachable at. A zero ScopeSet
+// makes a resource unreachable at every scope, which silently drops it from
+// every export.
+func TestEveryResourceDeclaresScopes(t *testing.T) {
+	for _, r := range Resources {
+		if r.Scopes == 0 {
+			t.Errorf("%s (%s) declares no scopes", r.TFType, r.FilterKey)
+		}
+	}
+}
+
+func TestScopePartitionsResources(t *testing.T) {
+	total := len(Resources)
+	for _, k := range []ScopeKind{ScopeEnvironment, ScopeTenant, ScopeOrganization} {
+		reachable := len(ResourcesForScope(k))
+		unreachable := len(UnreachableForScope(k))
+		if reachable+unreachable != total {
+			t.Errorf("%s scope: %d reachable + %d unreachable != %d total", k, reachable, unreachable, total)
+		}
+		if reachable == 0 {
+			t.Errorf("%s scope reaches nothing", k)
+		}
+	}
+	// Organization scope reaches the Jamf Account family and nothing else.
+	org := ResourcesForScope(ScopeOrganization)
+	if len(org) != 2 {
+		t.Errorf("organization scope: expected the 2 Jamf Account resources, got %d", len(org))
+	}
+	for _, r := range org {
+		if !strings.HasPrefix(r.TFType, "jamfplatform_account_") {
+			t.Errorf("organization scope reached a non-account resource: %s", r.TFType)
+		}
+	}
+	// Environment scope reaches everything except Jamf Account.
+	if got, want := len(ResourcesForScope(ScopeEnvironment)), total-2; got != want {
+		t.Errorf("environment scope: expected %d resources, got %d", want, got)
+	}
+	// Tenant scope additionally loses blueprints, benchmarks and AI Governance.
+	for _, key := range []string{"blueprints", "compliance_benchmarks", "ai_governance_policies"} {
+		for _, r := range ResourcesForScope(ScopeTenant) {
+			if r.FilterKey == key {
+				t.Errorf("tenant scope must not reach %s — the provider refuses it at configure time", key)
+			}
+		}
+	}
+}
+
+// scopedSelection must never leave a nil selection in place: downstream code
+// reads nil as "no filter", which would put out-of-scope list blocks back into
+// the query file.
+func TestScopedSelectionNeverNil(t *testing.T) {
+	for _, k := range []ScopeKind{ScopeEnvironment, ScopeTenant, ScopeOrganization} {
+		got := scopedSelection(k, nil)
+		if got == nil {
+			t.Fatalf("%s scope: scopedSelection(nil) returned nil", k)
+		}
+		for _, r := range UnreachableForScope(k) {
+			if got[r.FilterKey] {
+				t.Errorf("%s scope: selection includes unreachable %s", k, r.FilterKey)
+			}
+		}
+	}
+	// An explicit selection is intersected, not widened.
+	sel := scopedSelection(ScopeTenant, map[string]bool{"blueprints": true, "policy": true})
+	if sel["blueprints"] {
+		t.Error("tenant scope: blueprints must be dropped from an explicit selection")
+	}
+	if !sel["policy"] {
+		t.Error("tenant scope: policy must survive an explicit selection")
+	}
+	// Organization scope reaches no pro surface, so jamf_connect is dropped.
+	if scopedSelection(ScopeOrganization, nil)["jamf_connect"] {
+		t.Error("organization scope must not select jamf_connect")
+	}
+	if !scopedSelection(ScopeEnvironment, nil)["jamf_connect"] {
+		t.Error("environment scope should select jamf_connect")
 	}
 }
 
@@ -159,7 +264,13 @@ func TestPlatformDefaultRulesValid(t *testing.T) {
 			t.Errorf("rule %d (%s.%s) has no TargetAttr", i, r.ResourceType, r.AttrName)
 		}
 		if len(r.DiscriminatorMap) > 0 {
-			if r.DiscriminatorAttr == "" || r.ElementAttr == "" {
+			// A PrefixedIDs rule keys DiscriminatorMap on literal value
+			// prefixes rather than a sibling field, so it carries no
+			// DiscriminatorAttr.
+			switch {
+			case r.PrefixedIDs:
+				// Valid either per-element or on a single attribute.
+			case r.DiscriminatorAttr == "" || r.ElementAttr == "":
 				t.Errorf("rule %d (%s.%s) has DiscriminatorMap but missing DiscriminatorAttr/ElementAttr", i, r.ResourceType, r.AttrName)
 			}
 			continue

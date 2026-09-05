@@ -19,11 +19,15 @@ import (
 
 // PipelineOptions holds all parameters needed to run the Jamf Platform pipeline.
 type PipelineOptions struct {
-	OutputDir            string
-	BaseURL              string
-	ClientID             string
-	ClientSecret         string
-	TenantID             string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
+	OutputDir    string
+	BaseURL      string
+	ClientID     string
+	ClientSecret string
+	// Scope is the API integration's scope. It decides which construct
+	// families are reachable, which header the provider sends, and whether the
+	// federated Jamf Pro surface (packages, Jamf Connect, branding images) can
+	// be reached at all.
+	Scope                Scope
 	SelectedResources    map[string]bool
 	SkipReferences       bool
 	SkipPackageDownloads bool
@@ -112,6 +116,13 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 		}
 	}
 
+	// 9. Record the permissions this export required, so the next person to run
+	// it — or to apply it from CI — can create an integration with the right
+	// permission set instead of over-granting until an unattributed 403 stops.
+	if err := WritePermissionsFile(opts.OutputDir, opts.Scope, opts.SelectedResources); err != nil && !opts.Quiet {
+		fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+	}
+
 	return fixResult, nil
 }
 
@@ -149,6 +160,13 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		}
 	}
 
+	// Narrow the selection to what the configured scope can actually reach.
+	// A list block for an out-of-scope resource is not a partial failure: the
+	// provider refuses it when it configures itself, which fails the whole
+	// query. Restricting the selection here means one filter governs the query
+	// file, the singleton imports and the progress denominator alike.
+	opts.SelectedResources = scopedSelection(opts.Scope.Kind, opts.SelectedResources)
+
 	// 1. Generate provider config + query file
 	status("generating config", 0, 0)
 	logStep("Generating Terraform configuration for Jamf Platform...")
@@ -156,7 +174,8 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		BaseURL:         opts.BaseURL,
 		ClientID:        opts.ClientID,
 		ClientSecret:    opts.ClientSecret,
-		TenantID:        opts.TenantID,
+		EnvironmentID:   opts.Scope.EnvironmentID(),
+		TenantID:        opts.Scope.TenantID(),
 		ProviderVersion: opts.ProviderVersion,
 	}
 	if err := importgen.GeneratePlatform(opts.OutputDir, platformCreds); err != nil {
@@ -190,8 +209,15 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
 		"JAMFPLATFORM_CLIENT_SECRET": opts.ClientSecret,
 	}
-	if opts.TenantID != "" {
-		platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.TenantID
+	// Exactly one scope header is set, or neither for organization scope. The
+	// provider rejects both together with a "Conflicting API Integration Scope"
+	// error, and warns when a stray tenant variable is exported alongside an
+	// environment_id, so only the configured one is passed through.
+	if id := opts.Scope.EnvironmentID(); id != "" {
+		platformEnv["JAMFPLATFORM_ENVIRONMENT_ID"] = id
+	}
+	if id := opts.Scope.TenantID(); id != "" {
+		platformEnv["JAMFPLATFORM_TENANT_ID"] = id
 	}
 
 	// Drive a per-list-type discovery fraction: terraform query emits one
@@ -225,10 +251,10 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	wroteJamfConnect := false
 	jcSelected := opts.SelectedResources == nil || opts.SelectedResources["jamf_connect"]
 	if jcSelected {
-		if opts.TenantID == "" {
-			logStep("Skipping Jamf Connect discovery (set JAMF_TENANT_ID to enable — pro endpoints are tenant-scoped)")
+		if !opts.Scope.ReachesPro() {
+			logStep("Skipping Jamf Connect discovery (organization scope reaches only the Jamf Account family)")
 		} else {
-			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 			if n, jcErr := DiscoverJamfConnect(terraform.Ctx, pc, opts.OutputDir); jcErr != nil {
 				if !opts.Quiet {
 					fmt.Printf("  Warning: Jamf Connect discovery failed: %v\n", jcErr)
@@ -379,32 +405,17 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 
 	// 6d. Synthesise jamfplatform_pro_self_service_branding_image resources from
 	// the branding singletons' image-id references (no list resource). Downloads
-	// each image via the federated pro SDK; requires a tenant ID (pro endpoints
-	// are tenant-scoped). Registers each image so the singleton icon_id /
+	// each image via the federated pro SDK, which environment and tenant scope
+	// both reach. Registers each image so the singleton icon_id /
 	// banner_image_id references rewrite in post-processing.
-	if opts.TenantID != "" {
-		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+	if opts.Scope.ReachesPro() {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 		if imgCount, imgErr := GenerateBrandingImages(terraform.Ctx, pc, generatedFile, opts.OutputDir, reg); imgErr != nil {
 			if !opts.Quiet {
 				fmt.Printf("  Warning: could not synthesise branding image resources: %v\n", imgErr)
 			}
 		} else if imgCount > 0 {
 			logStep("  Generated %d Self Service branding image resource(s)", imgCount)
-		}
-	}
-
-	// 6e. Drop api_role privileges not in the instance's assignable-privilege
-	// catalog (the provider validates against this same list and rejects unknown
-	// values). Tenant-scoped pro endpoint, so it requires a tenant ID.
-	apiRoleSelected := opts.SelectedResources == nil || opts.SelectedResources["api_role"]
-	if apiRoleSelected && opts.TenantID != "" {
-		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
-		if n, prErr := FilterApiRolePrivileges(terraform.Ctx, pc, generatedFile); prErr != nil {
-			if !opts.Quiet {
-				fmt.Printf("  Warning: could not validate api_role privileges: %v\n", prErr)
-			}
-		} else if n > 0 {
-			logStep("  Dropped %d api_role privilege(s) not valid on this instance", n)
 		}
 	}
 
@@ -416,13 +427,13 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	packageFiles := make(map[string]string) // fileName → relative path
 	pkgSelected := opts.SelectedResources == nil || opts.SelectedResources["package"]
 	if !opts.SkipPackageDownloads && pkgSelected {
-		if opts.TenantID == "" {
-			logStep("Skipping package downloads (set JAMF_TENANT_ID to enable — JCDS is tenant-scoped)")
+		if !opts.Scope.ReachesPro() {
+			logStep("Skipping package downloads (organization scope reaches only the Jamf Account family)")
 		} else {
 			status("downloading packages", 0, 0)
 			logStep("Downloading package files...")
 			download.Quiet = opts.Quiet
-			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 			files, dlErr := download.Packages(terraform.Ctx, pc, opts.OutputDir, func(current, total int) {
 				status("downloading packages", current, total)
 			})

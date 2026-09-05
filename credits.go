@@ -247,6 +247,9 @@ func printCredits() {
 	}
 
 	credits := []credit{
+		// The Transformers universal greeting, and the first thing anyone
+		// watching a tool called jamformer transform a tenant should read.
+		{"Bah-weep-Graaaagnah wheep ni ni bong", goldC, 900 * time.Millisecond},
 		{"", whiteC, 200 * time.Millisecond},
 		{"J A M F O R M E R", blueC, 600 * time.Millisecond},
 		{"", whiteC, 300 * time.Millisecond},

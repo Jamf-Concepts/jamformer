@@ -34,7 +34,7 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 		BaseURL:              env.URL,
 		ClientID:             env.ClientID,
 		ClientSecret:         env.ClientSecret,
-		TenantID:             env.TenantID,
+		Scope:                env.PlatformScope(),
 		SelectedResources:    opts.SelectedResources,
 		SkipReferences:       false, // references must be resolved for diffing
 		SkipPackageDownloads: opts.SkipPackageDownloads,
@@ -111,15 +111,27 @@ func (platformProvider) EnvProviderHeader(env EnvConfig, versionLine string, _ i
 provider "jamfplatform" {
   base_url      = var.jamfplatform_base_url
   client_id     = var.jamfplatform_client_id
-  client_secret = var.jamfplatform_client_secret
-  tenant_id     = var.jamfplatform_tenant_id
+  client_secret = var.jamfplatform_client_secret%s
 }
-`, versionLine)
+`, versionLine, platformScopeProviderLine(env))
+}
+
+// platformScopeProviderLine returns the provider-block scope attribute for an
+// environment. Organization scope contributes nothing: setting neither
+// attribute is what selects it, and an empty string would be rejected.
+func platformScopeProviderLine(env EnvConfig) string {
+	switch {
+	case env.EnvironmentID != "":
+		return "\n  environment_id = var.jamfplatform_environment_id"
+	case env.TenantID != "":
+		return "\n  tenant_id     = var.jamfplatform_tenant_id"
+	}
+	return ""
 }
 
 func (platformProvider) EnvAuthVariables(env EnvConfig) string {
-	return fmt.Sprintf(`variable "jamfplatform_base_url" {
-  description = "Jamf Platform API gateway base URL (e.g. https://us.apigw.jamf.com)"
+	base := fmt.Sprintf(`variable "jamfplatform_base_url" {
+  description = "Jamf Platform API gateway host (e.g. https://us.api.jamfcloud.com, or eu. / apac.)"
   type        = string
   default     = %q
 }
@@ -136,11 +148,26 @@ variable "jamfplatform_client_secret" {
   sensitive   = true
 }
 
-variable "jamfplatform_tenant_id" {
-  description = "Jamf Platform tenant ID"
+`, env.URL)
+
+	switch {
+	case env.EnvironmentID != "":
+		return base + fmt.Sprintf(`variable "jamfplatform_environment_id" {
+  description = "Jamf Platform environment ID for the %s environment"
   type        = string
   default     = %q
 }
 
-`, env.URL, env.TenantID)
+`, env.Name, env.EnvironmentID)
+	case env.TenantID != "":
+		return base + fmt.Sprintf(`variable "jamfplatform_tenant_id" {
+  description = "Jamf Platform tenant ID for the %s environment (legacy scope)"
+  type        = string
+  default     = %q
+}
+
+`, env.Name, env.TenantID)
+	}
+	// Organization scope: no identifier variable.
+	return base
 }
