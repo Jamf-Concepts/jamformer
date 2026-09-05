@@ -31,6 +31,13 @@ var (
 	// conflictsWithRe matches `"attr": conflicts with other_attr`
 	conflictsWithRe = regexp.MustCompile(`"(\w+)":\s+conflicts\s+with\s+(\w+)`)
 
+	// removeNamedAttrRe matches a diagnostic that names the attribute to drop
+	// in backticks, e.g. "The Jamf Account console offers a PKCE setting only
+	// for a generic OpenID Connect or an Okta connection. Remove `pkce`."
+	// Distinct from the bare "remove it" phrasing, which leaves the attribute
+	// to be recovered from the summary.
+	removeNamedAttrRe = regexp.MustCompile("(?i)\\bremove\\s+[`'\"]([a-z0-9_]+)[`'\"]")
+
 	// emptyCollectionRe matches a SizeAtLeast / minimum-length validator
 	// rejecting an empty collection, e.g. "Attribute version_packages map must
 	// contain at least 1 elements, got: 0".
@@ -562,6 +569,15 @@ func classifyFix(summary, detail, filePath string, line int, schema *ProviderSch
 			return nil
 		}
 		return &validationFix{filePath: filePath, line: line, attrName: attrName}
+	}
+
+	// Strategy 1b: "... Remove `attr`." — the diagnostic names the attribute,
+	// which is more reliable than inferring one from the summary. This is the
+	// shape a provider uses for an attribute that is valid on the resource but
+	// not in this object's configuration (a PKCE setting on an Entra
+	// connection, say, which the provider's own read returns anyway).
+	if m := removeNamedAttrRe.FindStringSubmatch(combined); len(m) >= 2 {
+		return &validationFix{filePath: filePath, line: line, attrName: m[1]}
 	}
 
 	// Strategy 2: "'attr' must be 'VALUE' when ..." — set attribute to required value

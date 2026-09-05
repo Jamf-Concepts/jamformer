@@ -163,3 +163,38 @@ func contains(hay, needle string) bool {
 		return false
 	})()
 }
+
+// A diagnostic that names the attribute to drop in backticks is more reliable
+// than inferring one from the summary. The Jamf Account SSO connection read is
+// the case: it returns pkce for an Entra connection, which its own validator
+// allows only for generic OIDC and Okta.
+func TestRemoveNamedAttributeFromDiagnostic(t *testing.T) {
+	src := `resource "jamfplatform_account_sso_connection" "entraramp" {
+  connection_type = "entra"
+  pkce            = "disabled"
+}
+`
+	path := filepath.Join(t.TempDir(), "sso.tf")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fix := classifyFix("Invalid Attribute Combination",
+		"The Jamf Account console offers a PKCE setting only for a generic OpenID Connect "+
+			"or an Okta connection. Remove `pkce`.", path, 3, nil)
+	if fix == nil {
+		t.Fatal("expected a fix naming the attribute to remove")
+	}
+	if fix.attrName != "pkce" {
+		t.Fatalf("want pkce, got %q", fix.attrName)
+	}
+	if !removeAttributeFromFile(fix.filePath, fix.line, fix.attrName) {
+		t.Fatal("removal failed")
+	}
+	got, _ := os.ReadFile(path)
+	if contains(string(got), "pkce") {
+		t.Errorf("pkce survived:\n%s", got)
+	}
+	if !contains(string(got), `"entra"`) {
+		t.Errorf("connection_type was damaged:\n%s", got)
+	}
+}

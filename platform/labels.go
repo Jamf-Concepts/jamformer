@@ -35,7 +35,7 @@ func nameAttrForType(resourceType string) string {
 	// A claimed SSO domain has no name of its own — the domain it claims IS its
 	// identity, and terraform import takes that name in place of an ID.
 	case tAccountSSODomain:
-		return "domain_name"
+		return "domain"
 	// The Security Cloud search domain is a per-tenant singleton whose only
 	// attribute is the domain.
 	case tSCDnsSearchDomain:
