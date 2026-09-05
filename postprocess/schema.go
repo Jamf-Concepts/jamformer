@@ -106,6 +106,26 @@ func collectNestedType(out map[string]map[string]attrInfo, path string, nt *tfjs
 	}
 }
 
+// lookupAttr returns the schema entry for an attribute, and whether it was
+// found at all. A caller that has to fail closed needs the difference: an
+// attribute missing from the map is unproven, not Optional, and every one of
+// the boolean probes below flattens both cases to false.
+func (ps *ProviderSchema) lookupAttr(resourceType, blockPath, attrName string) (attrInfo, bool) {
+	if ps == nil {
+		return attrInfo{}, false
+	}
+	paths, ok := ps.attrs[resourceType]
+	if !ok {
+		return attrInfo{}, false
+	}
+	attrs, ok := paths[blockPath]
+	if !ok {
+		return attrInfo{}, false
+	}
+	info, ok := attrs[attrName]
+	return info, ok
+}
+
 // canStripNull returns true if a null attribute can be safely removed.
 // We strip any optional attribute (whether computed or not) — required
 // attributes are never removed. Any diffs caused by hidden provider SDK

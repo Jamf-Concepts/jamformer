@@ -105,8 +105,17 @@ func TestEmptyCollectionIsRemoved(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// The removal is only ever taken on a schema that positively says the
+	// attribute is Optional — see TestEmptyCollectionDeclinesWithoutProof.
+	schema := &ProviderSchema{
+		attrs: map[string]map[string]map[string]attrInfo{
+			"jamfplatform_pro_patch_software_title": {
+				"": {"version_packages": {Optional: true}},
+			},
+		},
+	}
 	fix := classifyFix("Invalid Attribute Value",
-		"Attribute version_packages map must contain at least 1 elements, got: 0", path, 3, nil)
+		"Attribute version_packages map must contain at least 1 elements, got: 0", path, 3, schema)
 	if fix == nil {
 		t.Fatal("expected a fix for the empty-collection diagnostic")
 	}
@@ -134,8 +143,13 @@ func TestNonEmptyCollectionIsNotRemoved(t *testing.T) {
 	if err := os.WriteFile(path, []byte("resource \"x\" \"y\" {\n  a = 1\n}\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	schema := &ProviderSchema{
+		attrs: map[string]map[string]map[string]attrInfo{
+			"x": {"": {"a": {Optional: true}}},
+		},
+	}
 	if fix := classifyFix("Invalid Attribute Value",
-		"Attribute a set must contain at least 5 elements, got: 3", path, 2, nil); fix != nil {
+		"Attribute a set must contain at least 5 elements, got: 3", path, 2, schema); fix != nil {
 		t.Errorf("expected no fix for a non-empty collection, got %q", fix.attrName)
 	}
 }

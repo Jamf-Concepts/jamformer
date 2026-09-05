@@ -24,6 +24,20 @@ process listings.
     JAMF_PASSWORD         Jamf Pro / JSC password (basic auth)
     JAMF_CLIENT_ID        API client ID (OAuth2)
     JAMF_CLIENT_SECRET    API client secret (OAuth2)
+    JAMF_ENVIRONMENT_ID   Jamf Platform environment scope (preferred)
+    JAMF_TENANT_ID        Jamf Platform tenant scope (legacy)
+    JAMF_ORGANIZATION_ID  Jamf Platform organization scope (confirmation only)
+
+  API Integration Scope (Jamf Platform only):
+    A Platform API integration carries exactly one scope, fixed when it
+    was registered: environment (preferred), tenant (legacy), or
+    organization. Set the ID matching yours - the environment and tenant
+    IDs are mutually exclusive, and setting neither means organization
+    scope. JAMF_ORGANIZATION_ID is never sent; it only confirms you
+    meant organization scope, so the prompt stops asking. Resource types
+    outside the scope are skipped and named at the start of the run.
+    See the README's "API integration scope" section, or -help multi-env
+    for the per-environment form.
 
   Auth Method Detection:
     If JAMF_CLIENT_ID is set    → OAuth2

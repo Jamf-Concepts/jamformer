@@ -10,14 +10,42 @@ import (
 	"github.com/Jamf-Concepts/jamformer/platform"
 )
 
-// isPlatformProvider reports whether the -provider value selects Jamf Platform,
-// which is also the default when the flag is unset.
-func isPlatformProvider(providerFlag string) bool {
-	v := providerFlag
-	if v == "" {
-		v = os.Getenv("JAMFORMER_PROVIDER")
+// applyPlatformEnvFallbacks fills any unset credential or scope identifier from
+// the Jamf Platform provider's own JAMFPLATFORM_* variables, so a shell already
+// set up to run `terraform` against a tenant needs no second set of exports.
+// The JAMF_* name wins wherever both are present.
+//
+// provider must be the *resolved* provider, not the raw -provider flag. Jamf
+// Platform is the default, but "not yet chosen" and "chosen as jamfplatform"
+// are different states: the interactive picker still offers Jamf Pro, Jamf
+// Protect and JSC. Applying these before the pick both populates the
+// credentials — which silently skips the credential prompt, since the auth
+// method is derived from them — and would POST a Platform client secret to
+// whichever host the user then chose. So this is a no-op for every other
+// provider, leaving the run to prompt for that host's own credentials.
+func applyPlatformEnvFallbacks(provider string, url, clientID, clientSecret, environmentID, tenantID *string) {
+	if provider != "jamfplatform" {
+		return
 	}
-	return v == "" || v == "jamfplatform"
+	if *clientID == "" {
+		*clientID = os.Getenv("JAMFPLATFORM_CLIENT_ID")
+	}
+	if *clientSecret == "" {
+		*clientSecret = os.Getenv("JAMFPLATFORM_CLIENT_SECRET")
+	}
+	if *url == "" {
+		*url = os.Getenv("JAMFPLATFORM_BASE_URL")
+	}
+	// The scope identifiers are read here as well as in ResolveScope, so that
+	// the interactive flow can tell whether the scope is already known without
+	// asking. Leaving that to ResolveScope alone made an exported
+	// JAMFPLATFORM_ENVIRONMENT_ID look unset and triggered the prompt.
+	if *environmentID == "" {
+		*environmentID = os.Getenv("JAMFPLATFORM_ENVIRONMENT_ID")
+	}
+	if *tenantID == "" {
+		*tenantID = os.Getenv("JAMFPLATFORM_TENANT_ID")
+	}
 }
 
 // firstNonEmpty returns the first non-empty string, or "".
@@ -38,11 +66,11 @@ func firstNonEmpty(vals ...string) string {
 // outside it is refused by the provider at configure time. Naming the skipped
 // families up front beats an export that quietly returns less than the tenant
 // holds, or one that dies on the first list block it cannot serve.
-func reportPlatformScope(scope platform.Scope, selected map[string]bool, quiet bool) {
-	if quiet {
-		return
-	}
-
+//
+// It prints whatever the verbosity: this is a one-time pre-flight disclosure,
+// not the per-step progress the spinner stands in for, and the interactive run
+// without -verbose is the case it was written for.
+func reportPlatformScope(scope platform.Scope, selected map[string]bool) {
 	switch scope.Kind {
 	case platform.ScopeEnvironment:
 		fmt.Printf("API integration scope: %senvironment%s (%s)\n", uBold, uReset, scope.ID)

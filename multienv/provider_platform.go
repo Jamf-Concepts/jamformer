@@ -48,6 +48,8 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 		return nil, err
 	}
 
+	writePlatformPermissions(env, opts)
+
 	schemas, _ := ir.ProviderSchemas.(*tfjson.ProviderSchemas)
 
 	// Apply the validation auto-fix in place (temp dir still init'd) so the merged
@@ -71,6 +73,40 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 		// The jamfplatform provider has no token_refresh_buffer_period attribute.
 		TokenRefreshPeriod: 0,
 	}, nil
+}
+
+// writePlatformPermissions writes PERMISSIONS.md into the assembled output
+// directory, which the single-env pipeline does in its own tail — a step the
+// multi-env path skips, because it enters through RunDiscoveryAndGenerate
+// rather than platform.RunPipeline. README lists the file as export output, so
+// leaving it out made multi-env quietly produce a project without it.
+//
+// Only the source environment writes it. Every environment shares one
+// selection, so the capability set differs between them only when their scopes
+// differ, and the file describes the environment the module was generated from.
+// The per-env temp dir would be the wrong destination: it is deleted when the
+// merge finishes.
+//
+// Best-effort, like the single-env call: a missing permissions summary must not
+// fail an otherwise complete export.
+func writePlatformPermissions(env EnvConfig, opts *Options) {
+	sourceEnv := opts.SourceEnv
+	if sourceEnv == "" {
+		sourceEnv = opts.Envs[0].Name
+	}
+	if env.Name != sourceEnv {
+		return
+	}
+	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
+		if !Quiet {
+			fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+		}
+		return
+	}
+	if err := platform.WritePermissionsFile(opts.OutputDir, env.PlatformScope(),
+		opts.SelectedResources, !opts.SkipPackageDownloads); err != nil && !Quiet {
+		fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+	}
 }
 
 // platformResourceRefs maps platform's discovered resources into the

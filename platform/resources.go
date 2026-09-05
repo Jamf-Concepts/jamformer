@@ -362,12 +362,10 @@ const (
 	tSCDnsHostnameMappings = "jamfplatform_security_cloud_dns_hostname_mappings"
 )
 
-// Jamf Account and AI Governance target type names.
-const (
-	tAccountSSODomain     = "jamfplatform_account_sso_domain"
-	tAccountSSOConnection = "jamfplatform_account_sso_connection"
-	tAIGovPolicy          = "jamfplatform_ai_governance_policy"
-)
+// Jamf Account target type name. The SSO connection and AI Governance policy
+// types carry no constant: nothing references them by name, and the Resources
+// table above spells its own TFTypes out.
+const tAccountSSODomain = "jamfplatform_account_sso_domain"
 
 // ExtractSpecs returns the string-attribute → support-file extraction specs for
 // the federated Jamf Pro resources, whose content lives in plugin-framework

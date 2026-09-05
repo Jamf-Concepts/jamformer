@@ -975,3 +975,137 @@ func TestWriteGitignore(t *testing.T) {
 		}
 	})
 }
+
+// The scope attribute, its variable declaration and its tfvars assignment are
+// three separate strings written into three separate files, and the defect they
+// can produce is a mismatch between them: a provider block referencing
+// var.jamfplatform_environment_id that no variables.tf declares fails
+// `terraform init` with "Reference to undeclared input variable", and one whose
+// attribute is dropped altogether leaves the provider resolving organization
+// scope, where the export silently discovers almost nothing. So each scope is
+// asserted across all three files at once, and the absence of the other scope's
+// name is asserted too — an emitted-but-empty attribute is as broken as a
+// missing one.
+func TestFinalizePlatform_ScopeAttributeMatchesAcrossFiles(t *testing.T) {
+	tests := []struct {
+		name string
+		// creds carries whichever of the two mutually exclusive scope IDs the
+		// case is about; neither set means organization scope.
+		creds *PlatformCredentials
+		// The three wants are asserted against their own file; wantNoneAny must
+		// appear in none of the three, and wantNoneProvider only in
+		// provider.tf — the bare attribute names are asserted there because
+		// provider.tf carries no prose, while variables.tf descriptions
+		// legitimately name the other scope ("prefer environment_id for new
+		// integrations"), which a bare-name negative would trip over.
+		wantProvider     []string
+		wantVariables    []string
+		wantTfvars       []string
+		wantNoneAny      []string
+		wantNoneProvider []string
+	}{
+		{
+			name: "environment scope",
+			creds: &PlatformCredentials{
+				BaseURL:       "https://us.api.jamfcloud.com",
+				EnvironmentID: "env-1234",
+			},
+			wantProvider:     []string{"environment_id = var.jamfplatform_environment_id"},
+			wantVariables:    []string{`variable "jamfplatform_environment_id"`},
+			wantTfvars:       []string{`jamfplatform_environment_id = "env-1234"`},
+			wantNoneAny:      []string{"jamfplatform_tenant_id"},
+			wantNoneProvider: []string{"tenant_id"},
+		},
+		{
+			name: "tenant scope",
+			creds: &PlatformCredentials{
+				BaseURL:  "https://eu.api.jamfcloud.com",
+				TenantID: "tenant-5678",
+			},
+			wantProvider:     []string{"tenant_id     = var.jamfplatform_tenant_id"},
+			wantVariables:    []string{`variable "jamfplatform_tenant_id"`},
+			wantTfvars:       []string{`jamfplatform_tenant_id = "tenant-5678"`},
+			wantNoneAny:      []string{"jamfplatform_environment_id"},
+			wantNoneProvider: []string{"environment_id"},
+		},
+		{
+			// Organization scope is selected by setting neither attribute, so
+			// there is nothing to write — not an empty attribute, and not an
+			// unassigned variable.
+			name:             "organization scope writes neither attribute nor variable",
+			creds:            &PlatformCredentials{BaseURL: "https://us.api.jamfcloud.com"},
+			wantNoneAny:      []string{"jamfplatform_environment_id", "jamfplatform_tenant_id"},
+			wantNoneProvider: []string{"environment_id", "tenant_id"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := GeneratePlatform(dir, tc.creds); err != nil {
+				t.Fatalf("GeneratePlatform: %v", err)
+			}
+			if err := FinalizePlatform(dir, tc.creds); err != nil {
+				t.Fatalf("FinalizePlatform: %v", err)
+			}
+
+			files := map[string]string{}
+			for _, name := range []string{"provider.tf", "variables.tf", "terraform.tfvars"} {
+				b, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil {
+					t.Fatalf("reading %s: %v", name, err)
+				}
+				files[name] = string(b)
+			}
+
+			for file, wants := range map[string][]string{
+				"provider.tf":      tc.wantProvider,
+				"variables.tf":     tc.wantVariables,
+				"terraform.tfvars": tc.wantTfvars,
+			} {
+				for _, want := range wants {
+					if !strings.Contains(files[file], want) {
+						t.Errorf("%s does not contain %q:\n%s", file, want, files[file])
+					}
+				}
+			}
+			for _, unwanted := range tc.wantNoneAny {
+				for file, content := range files {
+					if strings.Contains(content, unwanted) {
+						t.Errorf("%s mentions %q, which this scope must not emit:\n%s", file, unwanted, content)
+					}
+				}
+			}
+			for _, unwanted := range tc.wantNoneProvider {
+				if strings.Contains(files["provider.tf"], unwanted) {
+					t.Errorf("provider.tf sets %q, which this scope must not:\n%s", unwanted, files["provider.tf"])
+				}
+			}
+		})
+	}
+}
+
+// scopeAttr returning three empty strings is correct for organization scope and
+// a bug for the other two: the FinalizePlatform assertions above catch it, but
+// only through the files. Asserting the triple directly names the arm, so a
+// failure says which of the three parts went missing rather than which file
+// stopped matching.
+func TestScopeAttrReturnsAllThreePartsOrNone(t *testing.T) {
+	env := &PlatformCredentials{EnvironmentID: "env-1234"}
+	line, block, tfvar := env.scopeAttr()
+	if line == "" || block == "" || tfvar == "" {
+		t.Errorf("environment scope must produce all three parts, got line=%q block=%q tfvar=%q", line, block, tfvar)
+	}
+
+	tenant := &PlatformCredentials{TenantID: "tenant-5678"}
+	line, block, tfvar = tenant.scopeAttr()
+	if line == "" || block == "" || tfvar == "" {
+		t.Errorf("tenant scope must produce all three parts, got line=%q block=%q tfvar=%q", line, block, tfvar)
+	}
+
+	org := &PlatformCredentials{}
+	line, block, tfvar = org.scopeAttr()
+	if line != "" || block != "" || tfvar != "" {
+		t.Errorf("organization scope is selected by setting nothing, got line=%q block=%q tfvar=%q", line, block, tfvar)
+	}
+}

@@ -5,6 +5,7 @@ package platform
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/Jamf-Concepts/jamformer/platform/client"
@@ -225,4 +226,43 @@ func scopedSelection(k ScopeKind, selected map[string]bool) map[string]bool {
 		out["jamf_connect"] = true
 	}
 	return out
+}
+
+// unreachableSelectionError explains an -include-resources selection that scope
+// narrowing emptied — `-include-resources blueprints` at tenant scope is the
+// one-liner that does it. The empty set is legitimate as far as scopedSelection
+// is concerned, but the run that follows it is not: GenerateQueryFile writes no
+// query file, WriteSingletonImports writes no imports, and `terraform query`
+// then runs in a directory with nothing to query, having already downloaded the
+// provider. Naming the types and the scope that cannot reach them is the whole
+// answer, so it is worth failing here rather than in a raw terraform error.
+func unreachableSelectionError(k ScopeKind, requested map[string]bool) error {
+	// Report each requested type with the scopes it IS reachable at, since the
+	// fix is either a different integration or a different selection.
+	scopesFor := map[string]string{}
+	for _, r := range Resources {
+		scopesFor[r.FilterKey] = r.Scopes.Describe()
+	}
+	var lines []string
+	for key := range requested {
+		if !requested[key] {
+			continue
+		}
+		if where, known := scopesFor[key]; known {
+			lines = append(lines, fmt.Sprintf("%s (reachable at %s scope)", key, where))
+		} else {
+			lines = append(lines, key)
+		}
+	}
+	sort.Strings(lines)
+
+	if len(lines) == 0 {
+		// No explicit selection, so every type reachable at this scope was
+		// asked for and none exists. Only a ScopeKind outside the three
+		// constants gets here, but saying so beats an empty list.
+		return fmt.Errorf("no resource types are reachable at %s scope, so there is nothing to export", k)
+	}
+	return fmt.Errorf("none of the requested resource types are reachable at %s scope:\n  %s\n"+
+		"Either select types this integration can reach, or run with an integration registered at a scope that reaches them",
+		k, strings.Join(lines, "\n  "))
 }

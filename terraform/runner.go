@@ -406,7 +406,14 @@ func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[strin
 		} else {
 			stdoutDest = os.Stdout
 		}
-		cmd.Stderr = os.Stderr
+		// Capture in both modes, not just the quiet one: terraform's stderr is
+		// the only place a partial query's diagnostics exist, and
+		// classifyQueryResult reads them out of this builder. Streaming them
+		// live in Verbose without also keeping a copy meant the diagnostics
+		// were captured in exactly the mode that never printed them, and
+		// printed in the mode that never captured them — so what reached the
+		// operator was the string "exit status 1".
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	} else {
 		if eventsOut != nil {
 			stdoutDest = eventsOut
@@ -428,32 +435,42 @@ func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[strin
 		cmd.Stdout = stdoutDest
 	}
 
-	runErr := cmd.Run()
+	return classifyQueryResult(cmd.Run(), outputFile, stderr.String())
+}
+
+// classifyQueryResult decides what a `terraform query` exit means. It is split
+// out from queryInternal so the decision is testable without running terraform:
+// the three outcomes it distinguishes are the difference between a usable
+// export and a discarded one.
+//
+// `terraform query -generate-config-out` writes the config file and then plans
+// it, so a non-zero exit can mean either "nothing was discovered" or "the
+// config was generated and some of it does not plan". The second is recoverable
+// and common: a provider that returns null for an attribute it marks Required
+// generates a block Terraform refuses, and post-processing exists to repair
+// exactly that. Failing the run there would throw away a complete export over
+// a handful of resources.
+//
+// So a populated output file downgrades the failure to a partial result. The
+// caller decides what to do; the diagnostics travel with it, and the original
+// error is wrapped so an errors.Is against it still works.
+func classifyQueryResult(runErr error, outputFile, stderr string) error {
 	if runErr == nil {
 		return nil
 	}
 
-	// `terraform query -generate-config-out` writes the config file and then
-	// plans it, so a non-zero exit can mean either "nothing was discovered" or
-	// "the config was generated and some of it does not plan". The second is
-	// recoverable and common: a provider that returns null for an attribute it
-	// marks Required generates a block Terraform refuses, and post-processing
-	// exists to repair exactly that. Failing the run there would throw away a
-	// complete export over a handful of resources.
-	//
-	// So a populated output file downgrades the failure to a partial result.
-	// The caller decides what to do; the diagnostics travel with it so nothing
-	// is silently swallowed.
 	if fi, statErr := os.Stat(outputFile); statErr == nil && fi.Size() > 0 {
-		detail := stderr.String()
+		detail := stderr
 		if detail == "" {
+			// Nothing on stderr leaves only the exit status, which says
+			// nothing an operator can act on — but it beats printing nothing.
 			detail = runErr.Error()
 		}
-		return &PartialQueryError{Diagnostics: detail}
+		return &PartialQueryError{Diagnostics: detail, Err: runErr}
 	}
 
-	if stderr.Len() > 0 {
-		return fmt.Errorf("terraform query failed: %w\n%s", runErr, stderr.String())
+	if stderr != "" {
+		return fmt.Errorf("terraform query failed: %w\n%s", runErr, stderr)
 	}
 	return fmt.Errorf("terraform query failed: %w", runErr)
 }
@@ -463,11 +480,16 @@ func queryInternal(workDir, outputFile, eventsFile string, providerEnv map[strin
 // caller is expected to continue and let post-processing repair it.
 type PartialQueryError struct {
 	Diagnostics string
+	// Err is the underlying exec error. Kept so the downgrade to a partial
+	// result does not discard the exit status the classification was based on.
+	Err error
 }
 
 func (e *PartialQueryError) Error() string {
 	return "terraform query generated configuration but part of it did not plan:\n" + e.Diagnostics
 }
+
+func (e *PartialQueryError) Unwrap() error { return e.Err }
 
 // ProvidersSchema runs terraform providers schema -json and returns the parsed result.
 func ProvidersSchema(workDir string) (*tfjson.ProviderSchemas, error) {

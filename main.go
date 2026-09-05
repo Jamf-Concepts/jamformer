@@ -527,6 +527,7 @@ func main() {
 	compactExcludeFlag := flag.String("compact-exclude", "", "Space-separated list of resource types to exclude from compaction [env: JAMFORMER_COMPACT_EXCLUDE]")
 	splitByCategory := flag.Bool("split-by-category", false, "Split categorised resource types into per-category output files [env: JAMFORMER_SPLIT_BY_CATEGORY]")
 	skipSecretScan := flag.Bool("skip-secret-scan", false, "Skip secret scanning of generated output (see -help secrets) [env: JAMFORMER_SKIP_SECRET_SCAN]")
+	skipUpdateCheck := flag.Bool("skip-update-check", false, "Skip the check for a newer jamformer release [env: JAMFORMER_SKIP_UPDATE_CHECK]")
 	parallelismFlag := flag.Int("parallelism", 1, "Number of concurrent Terraform provider reads during config generation [env: JAMFORMER_PARALLELISM]")
 	multiEnvFlag := flag.String("multi-env", "", "Multi-env export with module + branch structure (see -help multi-env) [env: JAMFORMER_MULTI_ENV]")
 	sourceEnvFlag := flag.String("source-env", "", "Source-of-truth environment (default: first in -multi-env list) [env: JAMFORMER_SOURCE_ENV]")
@@ -559,7 +560,13 @@ func main() {
 	// authentication that follow. It is advisory and never blocks a run: the
 	// result is collected with a short grace period later, and a check that has
 	// not finished by then is dropped.
-	updateCheck := startUpdateCheck()
+	//
+	// The env-var opt-out is honoured inside update.Check itself, so the flag
+	// only has to skip starting the goroutine. A nil channel reports nothing.
+	var updateCheck <-chan update.Result
+	if !*skipUpdateCheck {
+		updateCheck = startUpdateCheck()
+	}
 
 	// Apply environment variable defaults for unset flags
 	if *url == "" {
@@ -573,31 +580,10 @@ func main() {
 	*clientSecret = os.Getenv("JAMF_CLIENT_SECRET")
 	*environmentID = os.Getenv("JAMF_ENVIRONMENT_ID")
 	*tenantID = os.Getenv("JAMF_TENANT_ID")
-	// The Jamf Platform provider reads its own JAMFPLATFORM_* variables. Accept
-	// them as fallbacks so a shell already set up to run `terraform` against a
-	// tenant needs no second set of exports; the JAMF_* name wins where both
-	// are present.
-	if isPlatformProvider(*providerFlag) {
-		if *clientID == "" {
-			*clientID = os.Getenv("JAMFPLATFORM_CLIENT_ID")
-		}
-		if *clientSecret == "" {
-			*clientSecret = os.Getenv("JAMFPLATFORM_CLIENT_SECRET")
-		}
-		if *url == "" {
-			*url = os.Getenv("JAMFPLATFORM_BASE_URL")
-		}
-		// The scope identifiers are read here as well as in ResolveScope, so
-		// that the interactive flow can tell whether the scope is already known
-		// without asking. Leaving that to ResolveScope alone made an exported
-		// JAMFPLATFORM_ENVIRONMENT_ID look unset and triggered the prompt.
-		if *environmentID == "" {
-			*environmentID = os.Getenv("JAMFPLATFORM_ENVIRONMENT_ID")
-		}
-		if *tenantID == "" {
-			*tenantID = os.Getenv("JAMFPLATFORM_TENANT_ID")
-		}
-	}
+	// The provider's own JAMFPLATFORM_* fallbacks are deliberately NOT applied
+	// here: the provider is not settled until the interactive picker has run,
+	// and a Platform client secret must never be carried into a Jamf Pro run.
+	// See applyPlatformEnvFallbacks, called once the pick is in.
 	if !*verbose && os.Getenv("JAMFORMER_VERBOSE") == "true" {
 		*verbose = true
 	}
@@ -736,6 +722,12 @@ func main() {
 	isPlatform := *providerFlag == "jamfplatform"
 	isJSC := *providerFlag == "jsc"
 
+	// Now that the provider is settled, accept the Jamf Platform provider's own
+	// JAMFPLATFORM_* variables as fallbacks. This has to land before the auth
+	// method is derived from the credentials below, and before the scope prompt
+	// consults *environmentID / *tenantID.
+	applyPlatformEnvFallbacks(*providerFlag, url, clientID, clientSecret, environmentID, tenantID)
+
 	// Validate that -include-resources and -exclude-resources are not used together
 	if *resourcesFlag != "" && *excludeFlag != "" {
 		log.Fatal("Cannot use both -include-resources and -exclude-resources at the same time")
@@ -752,9 +744,9 @@ func main() {
 	}
 
 	// Parse selected resource types
-	selectedResources := parseResourceFilter(*resourcesFlag, nameMap)
+	selectedResources := parseResourceFilter(*providerFlag, *resourcesFlag, nameMap)
 	if selectedResources == nil && *excludeFlag != "" {
-		excluded := parseResourceFilter(*excludeFlag, nameMap)
+		excluded := parseResourceFilter(*providerFlag, *excludeFlag, nameMap)
 		if excluded != nil {
 			selectedResources = make(map[string]bool)
 			for _, canonical := range nameMap {
@@ -924,7 +916,7 @@ func main() {
 		if scopeErr != nil {
 			log.Fatalf("%v", scopeErr)
 		}
-		reportPlatformScope(platformScope, selectedResources, quiet)
+		reportPlatformScope(platformScope, selectedResources)
 	}
 
 	// Verify authentication before proceeding with interactive prompts / terraform download
@@ -1330,7 +1322,9 @@ func main() {
 	// Show validation fix summary
 	if fixResult != nil && (fixResult.Fixed > 0 || len(fixResult.RequiredVars) > 0) {
 		if fixResult.Fixed > 0 {
-			fmt.Printf("  %sAuto-fixed %d invalid attribute(s) removed by validation%s\n", uDim, fixResult.Fixed, uReset)
+			// "fixed" covers removals, substitutions and values set from a
+			// diagnostic, so the summary cannot claim they were all removed.
+			fmt.Printf("  %sAuto-fixed %d invalid attribute(s) during validation%s\n", uDim, fixResult.Fixed, uReset)
 		}
 		if len(fixResult.RequiredVars) > 0 {
 			noun, verb := "variables", "require"
@@ -1384,7 +1378,21 @@ func main() {
 				if dot := strings.Index(resType, "."); dot >= 0 {
 					resType = resType[:dot]
 				}
-				resNoun := strings.ReplaceAll(strings.TrimPrefix(resType, "jamfpro_"), "_", " ")
+				// Strip whichever provider prefix the type carries. Only
+				// jamfpro_ was handled, so every jamfplatform_* type — the
+				// default provider, and the one the new empty-value fixes
+				// target — printed its raw Terraform type name here.
+				resNoun := resType
+				for _, prefix := range []string{
+					"jamfplatform_pro_", "jamfplatform_security_cloud_", "jamfplatform_account_",
+					"jamfplatform_", "jamfprotect_", "jamfpro_", "jsc_",
+				} {
+					if trimmed, ok := strings.CutPrefix(resNoun, prefix); ok {
+						resNoun = trimmed
+						break
+					}
+				}
+				resNoun = strings.ReplaceAll(resNoun, "_", " ")
 				if len(g.entries) > 1 {
 					resNoun += "s"
 				}
@@ -1395,6 +1403,17 @@ func main() {
 				}
 			}
 		}
+	}
+
+	// A project the auto-fix could not make valid is the one outcome the
+	// summary must not round up to success: the operator's next command is
+	// `terraform plan`, and it is going to fail. Reported outside the block
+	// above, which is keyed on something having been fixed — the worst case is
+	// that nothing could be.
+	if fixResult != nil && fixResult.StillInvalid {
+		fmt.Printf("\n  %s⚠%s  %sThis project does not pass terraform validate.%s\n",
+			uYellow, uReset, uBold, uReset)
+		fmt.Printf("     %sRun terraform validate in the output directory to see what remains.%s\n", uDim, uReset)
 	}
 
 	fmt.Printf("\n%sNext steps:%s\n", uBold, uReset)
@@ -1573,10 +1592,46 @@ func parseStringSet(input string) map[string]bool {
 	return m
 }
 
+// removedFilterKeys names filter keys that once worked and have since been
+// retired, per provider, mapped to the reason. A CI job or script carrying one
+// is not making a typo, but the generic unknown-type error — a name plus a dump
+// of ~100 valid ones — reads exactly like it is, and leaves the operator hunting
+// for a misspelling that isn't there.
+//
+// Keyed by provider because the same word can be a live key elsewhere: the Jamf
+// Pro provider still has api_roles, so "api_role" there is a near-miss worth
+// showing the valid names for, not a retirement.
+var removedFilterKeys = map[string]map[string]string{
+	"jamfplatform": {
+		"api_client": "jamfplatform_pro_api_client was removed at Platform API GA — its endpoint was unpublished to close a privilege-escalation path",
+		"api_role":   "jamfplatform_pro_api_role was removed at Platform API GA — its endpoint was unpublished to close a privilege-escalation path",
+	},
+}
+
+// unknownFilterKeyError explains a filter key the given provider does not
+// recognise: the retirement where the key names one, the valid-name list
+// otherwise.
+func unknownFilterKeyError(provider, name string, nameMap map[string]string) error {
+	if reason, ok := removedFilterKeys[provider][name]; ok {
+		return fmt.Errorf("resource type %q is no longer available: %s", name, reason)
+	}
+
+	var valid []string
+	seen := make(map[string]bool)
+	for _, v := range nameMap {
+		if !seen[v] {
+			valid = append(valid, v)
+			seen[v] = true
+		}
+	}
+	return fmt.Errorf("unknown resource type %q. Valid types: %s", name, strings.Join(valid, " "))
+}
+
 // parseResourceFilter parses a space-separated resource list into a filter map.
 // Also accepts commas for backwards compatibility.
 // Returns nil if the input is empty (meaning all resources).
-func parseResourceFilter(input string, nameMap map[string]string) map[string]bool {
+// provider is the resolved provider, used only to explain a key it retired.
+func parseResourceFilter(provider, input string, nameMap map[string]string) map[string]bool {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil
@@ -1591,15 +1646,7 @@ func parseResourceFilter(input string, nameMap map[string]string) map[string]boo
 		if canonical, ok := nameMap[name]; ok {
 			filter[canonical] = true
 		} else {
-			var valid []string
-			seen := make(map[string]bool)
-			for _, v := range nameMap {
-				if !seen[v] {
-					valid = append(valid, v)
-					seen[v] = true
-				}
-			}
-			log.Fatalf("Unknown resource type %q. Valid types: %s", name, strings.Join(valid, " "))
+			log.Fatalf("%v", unknownFilterKeyError(provider, name, nameMap))
 		}
 	}
 

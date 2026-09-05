@@ -45,6 +45,24 @@ const (
 	requestTimeout = 3 * time.Second
 )
 
+// Test seams. Both are package-level variables purely so the release lookup can
+// be driven against an httptest.Server: the endpoint and the client are the only
+// two things about it a test cannot otherwise reach, and without them Check's
+// comparison — the line that decides whether a notice is printed at all — has
+// never run under test. Production never reassigns either.
+var (
+	// releasesURL is the endpoint latestRelease reads. Overridden in tests.
+	releasesURL = releasesAPI
+	// httpClient performs the release request. Overridden in tests.
+	httpClient = http.DefaultClient
+)
+
+// errNoRelease reports that the repository has no published release. It is a
+// normal state rather than a fault, and it is returned both by the 404 branch
+// and by a cache entry recording that answer, so the two are indistinguishable
+// to the caller.
+var errNoRelease = errors.New("no published release")
+
 // InstallMethod is how this binary got onto the machine, which decides the
 // upgrade instruction.
 type InstallMethod int
@@ -164,20 +182,27 @@ func Check(ctx context.Context, current string) (Result, error) {
 // fresh enough and from the API otherwise.
 func latestRelease(ctx context.Context) (tag, url string, err error) {
 	if c, ok := readCache(); ok && time.Since(c.CheckedAt) < cacheTTL {
+		// An empty tag is the cached form of "nothing published" (see the 404
+		// branch below). Replaying it as a successful answer hands Check an
+		// unparseable version and turns a normal state into an error on every
+		// run for a day, so it is reported as the same normal state instead.
+		if c.TagName == "" {
+			return "", "", errNoRelease
+		}
 		return c.TagName, c.HTMLURL, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesAPI, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "jamformer-update-check")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -188,7 +213,7 @@ func latestRelease(ctx context.Context) (tag, url string, err error) {
 	// run retrying.
 	if resp.StatusCode == http.StatusNotFound {
 		writeCache(cached{CheckedAt: time.Now()})
-		return "", "", errors.New("no published release")
+		return "", "", errNoRelease
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("release check returned %s", resp.Status)
@@ -260,6 +285,16 @@ func DetectInstallMethod() InstallMethod {
 	if err != nil {
 		return InstallUnknown
 	}
+	return classifyPath(exe)
+}
+
+// classifyPath is DetectInstallMethod's whole body, split out as a test seam:
+// every branch below is a claim about a filesystem layout, and a test cannot
+// move the running binary to stand in one. Taking the path as an argument is
+// what makes the claims assertable — the source-checkout branch in particular,
+// which is the one branch whose absence gives a contributor actively wrong
+// advice ("download the latest release") instead of merely vague advice.
+func classifyPath(exe string) InstallMethod {
 	// Homebrew installs a symlink in <prefix>/bin pointing into the Cellar, so
 	// the real path is what identifies it.
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {

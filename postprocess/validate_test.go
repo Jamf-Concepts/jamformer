@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -434,8 +435,16 @@ func TestAttrBlockPath(t *testing.T) {
 		want string
 	}{
 		{"code", ""},
+		// SDKv2 shape: every nested block carries a list index, so the block
+		// path is every other element.
 		{"basic_auth_credentials.0.password", "basic_auth_credentials"},
 		{"a.0.b.0.c", "a.b"},
+		// Plugin-framework nested attributes are plain dotted paths, and
+		// ProviderSchema.attrs is keyed on the path minus its leaf. Stepping
+		// in pairs here returned "a" and missed the "a.b" key.
+		{"sender_settings.email_address", "sender_settings"},
+		{"a.b.c", "a.b"},
+		{"a.b.c.d", "a.b.c"},
 	}
 	for _, tt := range tests {
 		if got := attrBlockPath(tt.path); got != tt.want {
@@ -494,12 +503,15 @@ func TestFixRequiredNulls_SensitiveGetsVar(t *testing.T) {
 		line:     1,
 	}}
 
-	vars, fixed := fixRequiredNulls(dir, diags, schema)
-	if fixed != 1 {
-		t.Errorf("expected 1 fix, got %d", fixed)
+	vars, edits := fixRequiredNulls(dir, diags, schema)
+	if len(edits) != 1 {
+		t.Errorf("expected 1 edit, got %d", len(edits))
 	}
 	if len(vars) != 1 {
 		t.Fatalf("expected 1 var, got %d", len(vars))
+	}
+	if edits[0].Resource != "jamfpro_smtp_server.settings" || edits[0].Attr != "basic_auth_credentials.0.password" {
+		t.Errorf("edit does not name what was changed: %+v", edits[0])
 	}
 	if vars[0].VarName != "smtp_server_settings_password" {
 		t.Errorf("expected var name smtp_server_settings_password, got %q", vars[0].VarName)
@@ -540,12 +552,15 @@ func TestFixRequiredNulls_NonSensitiveGetsZeroValue(t *testing.T) {
 		line:     1,
 	}}
 
-	vars, fixed := fixRequiredNulls(dir, diags, schema)
-	if fixed != 1 {
-		t.Errorf("expected 1 fix, got %d", fixed)
+	vars, edits := fixRequiredNulls(dir, diags, schema)
+	if len(edits) != 1 {
+		t.Errorf("expected 1 edit, got %d", len(edits))
 	}
 	if len(vars) != 0 {
 		t.Errorf("expected 0 vars for non-sensitive, got %d", len(vars))
+	}
+	if len(edits) == 1 && edits[0].Action != `set to ""` {
+		t.Errorf("expected the edit to name the value written, got %q", edits[0].Action)
 	}
 
 	result, _ := os.ReadFile(filePath)
@@ -841,5 +856,291 @@ resource "jamfplatform_pro_disk_encryption_configuration" "d" {
 	}
 	if setAttributeValueAtLine(path, 1, "x") {
 		t.Error("expected false for a resource declaration line")
+	}
+}
+
+// The empty-collection removal is only ever taken against a schema that
+// positively says the attribute is Optional. Everything that leaves that
+// unproven has to decline, because removing a Required attribute trades the
+// size error for a missing-argument error that fixRequiredNulls answers by
+// putting the attribute back — the two then take turns until the iteration cap
+// and the run reports success over a project that does not validate.
+//
+// This test is also the tripwire on the guard: delete the schema check and
+// every case below starts returning a fix.
+func TestEmptyCollectionDeclinesWithoutProof(t *testing.T) {
+	src := `resource "jamfplatform_pro_app_request_settings" "settings" {
+  approver_emails = []
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app_request.tf")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const detail = "Attribute approver_emails set must contain at least 1 elements, got: 0"
+	withInfo := func(info attrInfo) *ProviderSchema {
+		return &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+			"jamfplatform_pro_app_request_settings": {"": {"approver_emails": info}},
+		}}
+	}
+
+	declines := []struct {
+		name   string
+		path   string
+		line   int
+		schema *ProviderSchema
+	}{
+		{
+			// terraform providers schema failed, which every pipeline reduces
+			// to a warning. Nothing can be proved, so nothing is removed.
+			name: "no schema at all", path: path, line: 2, schema: nil,
+		},
+		{
+			name: "unreadable file", path: filepath.Join(dir, "gone.tf"), line: 2, schema: withInfo(attrInfo{Optional: true}),
+		},
+		{
+			// A line no resource declaration precedes: the attribute cannot be
+			// attributed to a resource type, so the schema cannot be consulted.
+			name: "no resource at the line", path: path, line: 0, schema: withInfo(attrInfo{Optional: true}),
+		},
+		{
+			name: "required attribute", path: path, line: 2, schema: withInfo(attrInfo{Required: true}),
+		},
+		{
+			// A schema that does not carry the attribute answers "not
+			// Required" for a missing key exactly as it does for an Optional
+			// one, and those are not the same answer here.
+			name: "attribute absent from schema", path: path, line: 2,
+			schema: &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+				"jamfplatform_pro_app_request_settings": {"": {}},
+			}},
+		},
+	}
+	for _, tt := range declines {
+		t.Run(tt.name, func(t *testing.T) {
+			if fix := classifyFix("Invalid Attribute Value", detail, tt.path, tt.line, tt.schema); fix != nil {
+				t.Errorf("expected no fix, got %q — a Required attribute may now be removed and put back on every pass", fix.attrName)
+			}
+		})
+	}
+
+	t.Run("optional attribute is removed", func(t *testing.T) {
+		fix := classifyFix("Invalid Attribute Value", detail, path, 2, withInfo(attrInfo{Optional: true}))
+		if fix == nil {
+			t.Fatal("expected a fix for an Optional empty collection")
+		}
+		if fix.attrName != "approver_emails" {
+			t.Errorf("attrName = %q, want approver_emails", fix.attrName)
+		}
+	})
+}
+
+// An Optional string the server returned empty is removed, not turned into a
+// variable the operator has to invent a value for.
+func TestOptionalEmptyStringIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "smtp.tf")
+	src := `resource "jamfplatform_pro_smtp_server" "settings" {
+  sender_display_name = ""
+  authentication_type = "BASIC"
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfplatform_pro_smtp_server": {"": {"sender_display_name": {Optional: true, Type: cty.String}}},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{{
+		Severity: "error",
+		Summary:  "Invalid Attribute Value Length",
+		Detail:   "Attribute sender_display_name string length must be at least 1, got: 0",
+		Range:    &tfjson.Range{Filename: "smtp.tf", Start: tfjson.Pos{Line: 2}},
+	}}, schema)
+
+	if len(vars) != 0 {
+		t.Fatalf("an Optional empty string must not become a mandatory variable, got %+v", vars)
+	}
+	if len(edits) != 1 || edits[0].Action != "removed" {
+		t.Fatalf("expected one removal edit, got %+v", edits)
+	}
+	out, _ := os.ReadFile(path)
+	if strings.Contains(string(out), "sender_display_name") {
+		t.Errorf("sender_display_name survived:\n%s", out)
+	}
+	if !strings.Contains(string(out), "authentication_type") {
+		t.Errorf("sibling attribute was damaged:\n%s", out)
+	}
+}
+
+// A Required string the server returned empty can be neither removed nor
+// invented, so it becomes a variable — described by what actually went wrong,
+// not as a write-only secret the API is hiding.
+func TestRequiredEmptyStringBecomesDescribedVariable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "smtp.tf")
+	src := `resource "jamfplatform_pro_smtp_server" "settings" {
+  sender_settings = {
+    email_address = ""
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfplatform_pro_smtp_server": {
+			"sender_settings": {"email_address": {Required: true, Type: cty.String}},
+		},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{{
+		Severity: "error",
+		Summary:  "Invalid Attribute Value Length",
+		Detail:   "Attribute sender_settings.email_address string length must be at least 1, got: 0",
+		Range:    &tfjson.Range{Filename: "smtp.tf", Start: tfjson.Pos{Line: 3}},
+	}}, schema)
+
+	if len(vars) != 1 {
+		t.Fatalf("expected one variable, got %+v", vars)
+	}
+	if len(edits) != 1 {
+		t.Fatalf("expected one edit, got %+v", edits)
+	}
+	if !vars[0].NotSensitive {
+		t.Error("an empty server value is not a secret; it should not be marked sensitive")
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "= var."+vars[0].VarName) {
+		t.Errorf("expected the attribute wired to var.%s, got:\n%s", vars[0].VarName, out)
+	}
+	decl, _ := os.ReadFile(filepath.Join(dir, "variables.tf"))
+	if !strings.Contains(string(decl), "the server returned an empty value") {
+		t.Errorf("description should name the empty server value, got:\n%s", decl)
+	}
+	if strings.Contains(string(decl), "write-only") {
+		t.Errorf("description misstates the cause as a write-only secret:\n%s", decl)
+	}
+}
+
+// A Required empty string is never removed — that is the oscillation guard,
+// and it applies to the string case as much as the collection case.
+func TestRequiredEmptyStringIsNotRemoved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "smtp.tf")
+	if err := os.WriteFile(path, []byte("resource \"x\" \"y\" {\n  a = \"\"\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"x": {"": {"a": {Required: true, Type: cty.String}}},
+	}}
+	if fix := classifyFix("Invalid Attribute Value Length",
+		"Attribute a string length must be at least 1, got: 0", path, 2, schema); fix != nil {
+		t.Errorf("expected no removal for a Required empty string, got %q", fix.attrName)
+	}
+}
+
+// The write-only probe has to look the attribute up at its own block path. A
+// nested WriteOnly secret is not keyed at the top level, so passing "" made
+// the guard answer false and wired a variable over the one
+// injectRequiredWriteOnly had already paired with its _wo_version companion.
+func TestWriteOnlyProbeUsesTheAttributeBlockPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "disk.tf")
+	src := `resource "jamfplatform_pro_disk_encryption_configuration" "d" {
+  institutional_recovery_key = {
+    data = null
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfplatform_pro_disk_encryption_configuration": {
+			"institutional_recovery_key": {"data": {Required: true, WriteOnly: true, Type: cty.String}},
+		},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{{
+		Severity: "error",
+		Summary:  "Missing Configuration for Required Attribute",
+		Detail:   "Must set a configuration value for the institutional_recovery_key.data attribute",
+		Range:    &tfjson.Range{Filename: "disk.tf", Start: tfjson.Pos{Line: 3}},
+	}}, schema)
+
+	if len(vars) != 0 || len(edits) != 0 {
+		t.Fatalf("a WriteOnly attribute belongs to injectRequiredWriteOnly, got vars=%+v edits=%+v", vars, edits)
+	}
+	out, _ := os.ReadFile(path)
+	if strings.Contains(string(out), "var.") {
+		t.Errorf("the WriteOnly attribute was wired a second time:\n%s", out)
+	}
+}
+
+// FixResult.Fixed is the length of FixResult.Edits, so the count in the
+// auto-fix heading and the lines printed beneath it can never disagree. This
+// exercises both an edit-appending path and the required-null path, which used
+// to increment the count while recording nothing.
+func TestApplyFixPassRecordsAnEditForEveryFix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cdp.tf")
+	src := `resource "jamfpro_cloud_distribution_point" "settings" {
+  cdn_type                = "JAMFCLOUD"
+  secondary_auth_required = false
+}
+
+resource "jamfpro_activation_code" "settings" {
+  organization_name = "Jamf"
+  code              = null
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfpro_activation_code": {"": {"code": {Required: true, Sensitive: true, Type: cty.String}}},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{
+		{
+			Severity: "error",
+			Summary:  "Attribute secondary_auth_required Is Not Valid For CDN Type",
+			Detail:   "Attribute secondary_auth_required only when cdn_type is AKAMAI. Remove it or change cdn_type.",
+			Range:    &tfjson.Range{Filename: "cdp.tf", Start: tfjson.Pos{Line: 3}},
+		},
+		{
+			Severity: "error",
+			Summary:  "Missing required argument",
+			Detail:   `The argument "code" is required, but no definition was found.`,
+			Range:    &tfjson.Range{Filename: "cdp.tf", Start: tfjson.Pos{Line: 8}},
+		},
+	}, schema)
+
+	if len(edits) != 2 {
+		t.Fatalf("expected one edit per fix, got %d: %+v", len(edits), edits)
+	}
+	if len(vars) != 1 {
+		t.Fatalf("expected the sensitive required null to declare a variable, got %+v", vars)
+	}
+	for _, e := range edits {
+		if e.Resource == "" || e.Attr == "" || e.Action == "" || e.Reason == "" {
+			t.Errorf("edit is not reportable: %+v", e)
+		}
+	}
+	// A FixResult assembled the way FixValidationErrors assembles it keeps the
+	// heading and the detail lines in agreement.
+	result := &FixResult{}
+	result.Edits = append(result.Edits, edits...)
+	result.Fixed += len(edits)
+	if len(result.Edits) != result.Fixed {
+		t.Errorf("len(Edits) = %d, Fixed = %d", len(result.Edits), result.Fixed)
 	}
 }

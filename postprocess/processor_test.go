@@ -638,8 +638,12 @@ func TestSetNullToZeroValue_String(t *testing.T) {
 		},
 	}
 
-	if !setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "authentication_prompt", schema) {
+	zero, ok := setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "authentication_prompt", schema)
+	if !ok {
 		t.Fatal("expected true")
+	}
+	if zero != `""` {
+		t.Errorf("expected the written value reported back as %q, got %q", `""`, zero)
 	}
 
 	result, _ := os.ReadFile(filePath)
@@ -673,8 +677,12 @@ func TestSetNullToZeroValue_Bool(t *testing.T) {
 		},
 	}
 
-	if !setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "mdm_removable", schema) {
+	zero, ok := setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "mdm_removable", schema)
+	if !ok {
 		t.Fatal("expected true")
+	}
+	if zero != "false" {
+		t.Errorf("expected the written value reported back as \"false\", got %q", zero)
 	}
 
 	result, _ := os.ReadFile(filePath)
@@ -711,7 +719,7 @@ func TestSetNullToZeroValue_Nested(t *testing.T) {
 		},
 	}
 
-	if !setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "account_settings.0.admin_username", schema) {
+	if _, ok := setNullToZeroValue(filePath, []byte(content), "jamfpro_computer_prestage_enrollment", "test", "account_settings.0.admin_username", schema); !ok {
 		t.Fatal("expected true")
 	}
 
@@ -1395,4 +1403,82 @@ resource "jamfpro_mobile_device_application" "test2" {
 			t.Errorf("expected second config file with _2 suffix: %v", err)
 		}
 	})
+}
+
+// provider_name is a closed enum today, and the skip that depends on it is the
+// only thing standing between an unhydrated cloud identity provider and a
+// project that will not plan — the credentials block it is missing carries
+// secrets no read exposes, so nothing downstream can repair it. A third IdP
+// type must therefore be reported as unknown rather than reading as an
+// all-clear, which is what a silent fall-through gave.
+func TestMissingCloudIdPBlock(t *testing.T) {
+	tests := []struct {
+		name        string
+		src         string
+		wantMissing string
+		wantUnknown bool
+	}{
+		{
+			name: "entra with credentials is complete",
+			src: `resource "r" "l" {
+  provider_name = "ENTRA_ID"
+  entra_id = {
+    client_id = "abc"
+  }
+}`,
+		},
+		{
+			name: "entra without credentials is skipped",
+			src: `resource "r" "l" {
+  provider_name = "ENTRA_ID"
+}`,
+			wantMissing: "entra_id",
+		},
+		{
+			name: "google with a null block is skipped",
+			src: `resource "r" "l" {
+  provider_name = "GOOGLE"
+  google        = null
+}`,
+			wantMissing: "google",
+		},
+		{
+			name: "a third IdP type is reported unknown",
+			src: `resource "r" "l" {
+  provider_name = "OKTA"
+}`,
+			wantUnknown: true,
+		},
+		{
+			name: "a renamed discriminator is reported unknown",
+			src: `resource "r" "l" {
+  provider_name = "ENTRA"
+  entra_id = {
+    client_id = "abc"
+  }
+}`,
+			wantUnknown: true,
+		},
+		{
+			// No discriminator to read: provider_name is Required, so the
+			// validation auto-fix reports that in its own terms.
+			name: "absent provider_name is not this check's business",
+			src: `resource "r" "l" {
+  display_name = "x"
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := parseHCL(t, tt.src).Body().Blocks()[0].Body()
+			missing, unknown := missingCloudIdPBlock(body)
+			if missing != tt.wantMissing {
+				t.Errorf("missing = %q, want %q", missing, tt.wantMissing)
+			}
+			if unknown != tt.wantUnknown {
+				t.Errorf("unknown = %v, want %v", unknown, tt.wantUnknown)
+			}
+		})
+	}
 }

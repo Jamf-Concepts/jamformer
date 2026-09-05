@@ -124,7 +124,7 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	// 9. Record the permissions this export required, so the next person to run
 	// it — or to apply it from CI — can create an integration with the right
 	// permission set instead of over-granting until an unattributed 403 stops.
-	if err := WritePermissionsFile(opts.OutputDir, opts.Scope, opts.SelectedResources); err != nil && !opts.Quiet {
+	if err := WritePermissionsFile(opts.OutputDir, opts.Scope, opts.SelectedResources, !opts.SkipPackageDownloads); err != nil && !opts.Quiet {
 		fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
 	}
 
@@ -170,7 +170,16 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	// provider refuses it when it configures itself, which fails the whole
 	// query. Restricting the selection here means one filter governs the query
 	// file, the singleton imports and the progress denominator alike.
-	opts.SelectedResources = scopedSelection(opts.Scope.Kind, opts.SelectedResources)
+	// Narrowing can legitimately empty the selection, and everything downstream
+	// then does nothing quietly: no query file is written, no singleton imports,
+	// and terraform query runs against an empty directory — after init has
+	// already pulled the provider. Fail here, where the requested types and the
+	// scope that cannot reach them are both still in hand.
+	requested := opts.SelectedResources
+	opts.SelectedResources = scopedSelection(opts.Scope.Kind, requested)
+	if len(opts.SelectedResources) == 0 {
+		return nil, unreachableSelectionError(opts.Scope.Kind, requested)
+	}
 
 	// 1. Generate provider config + query file
 	status("generating config", 0, 0)
@@ -214,16 +223,18 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
 		"JAMFPLATFORM_CLIENT_SECRET": opts.ClientSecret,
 	}
-	// Exactly one scope header is set, or neither for organization scope. The
-	// provider rejects both together with a "Conflicting API Integration Scope"
-	// error, and warns when a stray tenant variable is exported alongside an
-	// environment_id, so only the configured one is passed through.
-	if id := opts.Scope.EnvironmentID(); id != "" {
-		platformEnv["JAMFPLATFORM_ENVIRONMENT_ID"] = id
-	}
-	if id := opts.Scope.TenantID(); id != "" {
-		platformEnv["JAMFPLATFORM_TENANT_ID"] = id
-	}
+	// Both scope keys are always set, empty for the one not in use. The scope
+	// resolved for this run is the only scope it may use, and mergeProviderEnv
+	// backfills any key it is not given from the caller's own environment — so
+	// leaving a key out is not "unset", it is "whatever is in the shell". A
+	// stray JAMFPLATFORM_TENANT_ID (the multi-env path reads only _<ENV>-
+	// suffixed names, so an unsuffixed one is never consumed) would otherwise
+	// reach the provider, which sees no provider block during discovery and
+	// takes its scope entirely from the environment: an organization-scoped run
+	// would silently export a stray tenant's objects, and an environment-scoped
+	// one would abort with "Conflicting API Integration Scope".
+	platformEnv["JAMFPLATFORM_ENVIRONMENT_ID"] = opts.Scope.EnvironmentID()
+	platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.Scope.TenantID()
 
 	// Drive a per-list-type discovery fraction: terraform query emits one
 	// "list_complete" event per list block, counted against the number of
@@ -242,8 +253,16 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		if !errors.As(queryErr, &partial) {
 			return nil, fmt.Errorf("terraform query: %w", queryErr)
 		}
-		logStep("  Some resources did not plan as generated; repairing during post-processing")
-		if opts.Verbose {
+		// Printed regardless of Quiet: this is terraform reporting that it
+		// refused part of the config the export just generated. Post-processing
+		// repairs the cases it knows about, but it has no strategy for every
+		// one, and a run that swallowed this would end with a success summary
+		// over an incomplete export.
+		fmt.Println("  Some resources did not plan as generated; repairing during post-processing")
+		// Under -verbose the child's stderr was already streamed live, so
+		// printing the captured copy here would show the same block twice. The
+		// invariant is that the diagnostics appear exactly once, in every mode.
+		if !opts.Verbose {
 			fmt.Println(partial.Diagnostics)
 		}
 	}
@@ -269,12 +288,28 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	aiSelected := opts.SelectedResources == nil || opts.SelectedResources["app_installer"]
 	if aiSelected && opts.Scope.ReachesPro() {
 		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
-		if n, aiErr := HydrateAppInstallerTitles(terraform.Ctx, pc, generatedFile, eventsFile); aiErr != nil {
+		filled, guessed, unresolved, aiErr := HydrateAppInstallerTitles(terraform.Ctx, pc, generatedFile, eventsFile)
+		if aiErr != nil {
 			if !opts.Quiet {
 				fmt.Printf("  Warning: could not resolve App Installer titles: %v\n", aiErr)
 			}
-		} else if n > 0 {
-			logStep("  Resolved %d App Installer title(s) the provider returned as null", n)
+		} else {
+			if filled > 0 {
+				logStep("  Resolved %d App Installer title(s) from the App Installers catalogue", filled)
+			}
+			// A guess is the deployment's own name standing in for the catalogue
+			// title. It usually matches, but nothing verified it, so it is
+			// printed whatever the verbosity: the operator has to be able to
+			// check app_title_name against the catalogue before applying.
+			if guessed > 0 {
+				fmt.Printf("  ⚠ Guessed %d App Installer title(s) from the deployment name — verify app_title_name before applying\n", guessed)
+			}
+			// Unresolved blocks still carry a null app_title_name, which the
+			// provider marks Required, so they will not plan until a human
+			// fills them in.
+			if unresolved > 0 {
+				fmt.Printf("  ⚠ %d App Installer block(s) still have no app_title_name; set it manually before applying\n", unresolved)
+			}
 		}
 	}
 

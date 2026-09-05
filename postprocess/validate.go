@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/Jamf-Concepts/jamformer/terraform"
@@ -119,6 +120,13 @@ type RequiredVar struct {
 	// addresses is a required value but not a secret, and marking it sensitive
 	// only makes it harder to see what a plan is doing.
 	NotSensitive bool
+	// Cause names why the value has to be supplied here and becomes the
+	// variable's description. Empty falls back to the write-only wording,
+	// which is what an unreadable Required secret means. An attribute the
+	// server returned empty is a different problem, and a description that
+	// calls it a write-only secret sends the operator looking for a value the
+	// API is hiding rather than one the tenant never set.
+	Cause string
 }
 
 // FixResult holds the outcome of FixValidationErrors.
@@ -131,6 +139,13 @@ type FixResult struct {
 	// repair from a wrong one, or to notice when a provider fix upstream has
 	// made a repair unnecessary.
 	Edits []FixEdit
+	// StillInvalid reports that the project did not pass terraform validate by
+	// the time the fix loop gave up — either nothing left was auto-fixable or
+	// the iteration cap was reached. FixValidationErrors returns a nil error in
+	// both cases (an unfixable diagnostic is not a jamformer failure), so
+	// without this the caller has no way to tell a repaired project from one
+	// that still will not plan, and would print a success summary over it.
+	StillInvalid bool
 }
 
 // FixEdit is one auto-fix: the resource and attribute changed, and the
@@ -166,156 +181,35 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 			return result, fmt.Errorf("terraform validate: %w", err)
 		}
 		if valResult.Valid {
+			result.StillInvalid = false
 			return result, nil
 		}
 
-		fixed := 0
-		var requiredNulls []requiredNullDiag
+		// The project does not validate as it stands. Only a pass that comes
+		// back valid clears this, so both remaining exits — the "nothing left
+		// to fix" break below and the iteration cap — report honestly rather
+		// than letting a nil error read as success.
+		result.StillInvalid = true
 
-		for _, diag := range valResult.Diagnostics {
-			if diag.Severity != "error" {
-				continue
-			}
-			if diag.Range == nil || diag.Range.Filename == "" {
-				continue
-			}
+		vars, edits := applyFixPass(outputDir, valResult.Diagnostics, schema)
+		result.RequiredVars = append(result.RequiredVars, vars...)
+		result.Edits = append(result.Edits, edits...)
 
-			filePath := filepath.Join(outputDir, diag.Range.Filename)
-
-			// Check for required null first (separate handling)
-			if m := requiredNullRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
-				requiredNulls = append(requiredNulls, requiredNullDiag{
-					attrPath: m[1],
-					filePath: filePath,
-					filename: diag.Range.Filename,
-					line:     diag.Range.Start.Line,
-				})
-				continue
-			}
-
-			// Explicit-null Required attribute ("Must set a configuration value for
-			// the <attr> attribute"): the provider can't read it back (a secret or
-			// otherwise unreadable required field). Wire it to a sensitive variable
-			// at its exact line (handles nested attributes), so the user supplies
-			// the value rather than the config failing. WriteOnly attributes and
-			// their _wo_version companions are left to injectRequiredWriteOnly,
-			// which pairs them correctly (the secret → var, _wo_version → 1).
-			if m := mustSetConfigRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
-				attr := m[1]
-				if isWoVersionAttr(attr) {
-					continue
-				}
-				src, _ := os.ReadFile(filePath)
-				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
-				if resType != "" && !schema.isWriteOnly(resType, "", attr) {
-					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attr)
-					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
-						rv := RequiredVar{VarName: varName, AttrPath: attr, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
-						appendVariables(outputDir, []RequiredVar{rv})
-						result.RequiredVars = append(result.RequiredVars, rv)
-						fixed++
-					}
-				}
-				continue
-			}
-
-			// An empty collection on a Required attribute: the provider insists
-			// on at least one element and the tenant holds none (App Request
-			// with no approvers is the case that surfaced this). It cannot be
-			// removed — it is Required — and no element can be invented, so it
-			// becomes a variable the user supplies. Optional ones are removed
-			// instead, in classifyFix.
-			if m := emptyCollectionRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
-				attrPath := m[1]
-				leaf := leafAttrName(attrPath)
-				src, _ := os.ReadFile(filePath)
-				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
-				if resType != "" && schema.isRequired(resType, attrBlockPath(attrPath), leaf) {
-					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
-					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
-						rv := RequiredVar{
-							VarName:  varName,
-							AttrPath: attrPath,
-							Resource: resType + "." + resLabel,
-							Filename: diag.Range.Filename,
-							// The diagnostic names the collection kind
-							// ("set must contain at least 1"), but set(string)
-							// accepts a list literal and is the safe shape for
-							// either, so it is used for both.
-							VarType:      "set(string)",
-							NotSensitive: !schema.isSensitive(resType, attrBlockPath(attrPath), leaf),
-						}
-						appendVariables(outputDir, []RequiredVar{rv})
-						result.RequiredVars = append(result.RequiredVars, rv)
-						result.Edits = append(result.Edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
-						fixed++
-						continue
-					}
-				}
-			}
-
-			// An empty string rejected by a minimum-length validator: the
-			// server holds no value for an attribute the provider insists on
-			// (an unconfigured SMTP sender address is the usual case). There is
-			// nothing to recover and nothing safe to invent, so it becomes a
-			// variable the user must supply — the same treatment an explicitly
-			// null Required attribute gets, and for the same reason.
-			if m := emptyStringRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
-				attrPath := m[1]
-				src, _ := os.ReadFile(filePath)
-				resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
-				if resType != "" && !schema.isWriteOnly(resType, "", leafAttrName(attrPath)) {
-					varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
-					if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
-						rv := RequiredVar{VarName: varName, AttrPath: attrPath, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
-						appendVariables(outputDir, []RequiredVar{rv})
-						result.RequiredVars = append(result.RequiredVars, rv)
-						result.Edits = append(result.Edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
-						fixed++
-						continue
-					}
-				}
-			}
-
-			fix := classifyFix(diag.Summary, diag.Detail, filePath, diag.Range.Start.Line, schema)
-			if fix == nil {
-				continue
-			}
-
-			src, _ := os.ReadFile(filePath)
-			resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
-			addr := resType + "." + resLabel
-			if fix.newValue == "" {
-				if removeAttributeFromFile(fix.filePath, fix.line, fix.attrName) {
-					fixed++
-					result.Edits = append(result.Edits, FixEdit{addr, fix.attrName, "removed", diag.Summary})
-				}
-			} else {
-				if setAttributeInFile(fix.filePath, fix.line, fix.attrName, fix.newValue) {
-					fixed++
-					result.Edits = append(result.Edits, FixEdit{addr, fix.attrName, "set to " + fix.newValue, diag.Summary})
-				}
-			}
-		}
-
-		// Handle required nulls — sensitive get variable references, non-sensitive get ""
-		if len(requiredNulls) > 0 {
-			vars, n := fixRequiredNulls(outputDir, requiredNulls, schema)
-			fixed += n
-			result.RequiredVars = append(result.RequiredVars, vars...)
-		}
-
-		if fixed == 0 {
+		if len(edits) == 0 {
 			break
 		}
 
-		result.Fixed += fixed
+		// The fix count is the edit count, by construction. It used to be a
+		// separate counter, and the two paths that incremented it without
+		// recording an edit made the audit log below print the previous pass's
+		// lines under this pass's heading.
+		result.Fixed += len(edits)
 		if !Quiet {
-			fmt.Printf("  Auto-fixed %d validation error(s), re-validating...\n", fixed)
+			fmt.Printf("  Auto-fixed %d validation error(s), re-validating...\n", len(edits))
 			// Name each edit. This is generated configuration being changed
 			// without being asked, and the count alone tells the user nothing
 			// they can check.
-			for _, e := range result.Edits[len(result.Edits)-min(fixed, len(result.Edits)):] {
+			for _, e := range edits {
 				fmt.Printf("    %s: %s %s (%s)\n", e.Resource, e.Attr, e.Action, e.Reason)
 			}
 		}
@@ -325,21 +219,193 @@ func FixValidationErrors(outputDir string, schema *ProviderSchema) (*FixResult, 
 	return result, nil
 }
 
+// applyFixPass applies every auto-fix the given diagnostics call for, in one
+// pass over them, and returns the variables it declared and one FixEdit per
+// attribute it changed. The edit list is the fix count: a repair that records
+// no edit does not count as a repair, which is what keeps the caller's audit
+// log and its heading in agreement.
+func applyFixPass(outputDir string, diags []tfjson.Diagnostic, schema *ProviderSchema) ([]RequiredVar, []FixEdit) {
+	var requiredVars []RequiredVar
+	var edits []FixEdit
+	var requiredNulls []requiredNullDiag
+
+	for _, diag := range diags {
+		if diag.Severity != "error" {
+			continue
+		}
+		if diag.Range == nil || diag.Range.Filename == "" {
+			continue
+		}
+
+		filePath := filepath.Join(outputDir, diag.Range.Filename)
+
+		// Check for required null first (separate handling)
+		if m := requiredNullRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
+			requiredNulls = append(requiredNulls, requiredNullDiag{
+				attrPath: m[1],
+				filePath: filePath,
+				filename: diag.Range.Filename,
+				line:     diag.Range.Start.Line,
+				summary:  diag.Summary,
+			})
+			continue
+		}
+
+		// Explicit-null Required attribute ("Must set a configuration value for
+		// the <attr> attribute"): the provider can't read it back (a secret or
+		// otherwise unreadable required field). Wire it to a sensitive variable
+		// at its exact line (handles nested attributes), so the user supplies
+		// the value rather than the config failing. WriteOnly attributes and
+		// their _wo_version companions are left to injectRequiredWriteOnly,
+		// which pairs them correctly (the secret → var, _wo_version → 1).
+		if m := mustSetConfigRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
+			attr := m[1]
+			if isWoVersionAttr(attr) {
+				continue
+			}
+			src, _ := os.ReadFile(filePath)
+			resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+			// The capture may be a dotted path, so the write-only probe needs
+			// the attribute's own block path. Passing "" looked the leaf up at
+			// the top level, where a nested secret is not keyed, so the guard
+			// never fired for one and injectRequiredWriteOnly's work here was
+			// wired a second time.
+			if resType != "" && !schema.isWriteOnly(resType, attrBlockPath(attr), leafAttrName(attr)) {
+				varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attr)
+				if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+					rv := RequiredVar{VarName: varName, AttrPath: attr, Resource: resType + "." + resLabel, Filename: diag.Range.Filename}
+					appendVariables(outputDir, []RequiredVar{rv})
+					requiredVars = append(requiredVars, rv)
+					edits = append(edits, FixEdit{resType + "." + resLabel, attr, "replaced with var." + varName, diag.Summary})
+				}
+			}
+			continue
+		}
+
+		// An empty collection on a Required attribute: the provider insists
+		// on at least one element and the tenant holds none (App Request
+		// with no approvers is the case that surfaced this). It cannot be
+		// removed — it is Required — and no element can be invented, so it
+		// becomes a variable the user supplies. Optional ones are removed
+		// instead, in classifyFix.
+		if m := emptyCollectionRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
+			attrPath := m[1]
+			leaf := leafAttrName(attrPath)
+			src, _ := os.ReadFile(filePath)
+			resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+			if resType != "" && schema.isRequired(resType, attrBlockPath(attrPath), leaf) {
+				varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
+				if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+					rv := RequiredVar{
+						VarName:  varName,
+						AttrPath: attrPath,
+						Resource: resType + "." + resLabel,
+						Filename: diag.Range.Filename,
+						// The diagnostic names the collection kind
+						// ("set must contain at least 1"), but set(string)
+						// accepts a list literal and is the safe shape for
+						// either, so it is used for both.
+						VarType:      "set(string)",
+						NotSensitive: !schema.isSensitive(resType, attrBlockPath(attrPath), leaf),
+					}
+					appendVariables(outputDir, []RequiredVar{rv})
+					requiredVars = append(requiredVars, rv)
+					edits = append(edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
+					continue
+				}
+			}
+		}
+
+		// An empty string rejected by a minimum-length validator: the server
+		// holds no value for an attribute the provider insists on (an
+		// unconfigured SMTP sender address is the usual case). There is
+		// nothing to recover and nothing safe to invent, so a Required one
+		// becomes a variable the user must supply — the same treatment an
+		// explicitly null Required attribute gets, and for the same reason.
+		//
+		// Only a Required one. An Optional attribute holding nothing is
+		// removed instead, by classifyFix's strategy 5b, exactly as the
+		// empty-collection case is: turning it into a mandatory variable
+		// would stop a plan dead until the operator invented a value for a
+		// field that need not be set at all.
+		if m := emptyStringRe.FindStringSubmatch(diag.Summary + " " + diag.Detail); len(m) >= 2 {
+			attrPath := m[1]
+			blockPath := attrBlockPath(attrPath)
+			leaf := leafAttrName(attrPath)
+			src, _ := os.ReadFile(filePath)
+			resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+			if resType != "" && schema.isRequired(resType, blockPath, leaf) &&
+				!schema.isWriteOnly(resType, blockPath, leaf) {
+				varName := sanitizeVarName(stripProviderPrefix(resType) + "_" + resLabel + "_" + attrPath)
+				if setAttributeValueAtLine(filePath, diag.Range.Start.Line, "var."+varName) {
+					rv := RequiredVar{
+						VarName:  varName,
+						AttrPath: attrPath,
+						Resource: resType + "." + resLabel,
+						Filename: diag.Range.Filename,
+						// The value is missing because the server had none,
+						// not because it is a secret no read returns, and
+						// only the sensitive ones are worth hiding.
+						NotSensitive: !schema.isSensitive(resType, blockPath, leaf),
+						Cause:        "the server returned an empty value, so it must be supplied here",
+					}
+					appendVariables(outputDir, []RequiredVar{rv})
+					requiredVars = append(requiredVars, rv)
+					edits = append(edits, FixEdit{resType + "." + resLabel, attrPath, "replaced with var." + varName, diag.Summary})
+					continue
+				}
+			}
+		}
+
+		fix := classifyFix(diag.Summary, diag.Detail, filePath, diag.Range.Start.Line, schema)
+		if fix == nil {
+			continue
+		}
+
+		src, _ := os.ReadFile(filePath)
+		resType, resLabel := resourceAtLine(src, diag.Range.Start.Line)
+		addr := resType + "." + resLabel
+		if fix.newValue == "" {
+			if removeAttributeFromFile(fix.filePath, fix.line, fix.attrName) {
+				edits = append(edits, FixEdit{addr, fix.attrName, "removed", diag.Summary})
+			}
+		} else {
+			if setAttributeInFile(fix.filePath, fix.line, fix.attrName, fix.newValue) {
+				edits = append(edits, FixEdit{addr, fix.attrName, "set to " + fix.newValue, diag.Summary})
+			}
+		}
+	}
+
+	// Handle required nulls — sensitive get variable references, non-sensitive get ""
+	if len(requiredNulls) > 0 {
+		vars, nullEdits := fixRequiredNulls(outputDir, requiredNulls, schema)
+		requiredVars = append(requiredVars, vars...)
+		edits = append(edits, nullEdits...)
+	}
+
+	return requiredVars, edits
+}
+
 // requiredNullDiag holds info parsed from a "required, but no definition was found" diagnostic.
 type requiredNullDiag struct {
 	attrPath string // e.g. "code" or "basic_auth_credentials.0.password"
 	filePath string // absolute path
 	filename string // relative filename
 	line     int
+	summary  string // the diagnostic summary, carried through to the audit log
 }
 
 // fixRequiredNulls handles "required, but no definition was found" errors.
 // Sensitive attributes are replaced with variable references (var.X) and
 // appended to variables.tf. Non-sensitive attributes are replaced with empty
 // strings (""). If schema is nil, all attributes are treated as sensitive.
-func fixRequiredNulls(outputDir string, diags []requiredNullDiag, schema *ProviderSchema) ([]RequiredVar, int) {
+//
+// It returns the variables it declared and one FixEdit per attribute changed.
+// The edit count is the fix count — the caller uses it as such, so that every
+// number it reports has a named edit behind it.
+func fixRequiredNulls(outputDir string, diags []requiredNullDiag, schema *ProviderSchema) ([]RequiredVar, []FixEdit) {
 	var vars []RequiredVar
-	fixed := 0
+	var edits []FixEdit
 
 	for _, d := range diags {
 		src, err := os.ReadFile(d.filePath)
@@ -360,8 +426,8 @@ func fixRequiredNulls(outputDir string, diags []requiredNullDiag, schema *Provid
 
 		// Non-sensitive: replace null with type-appropriate zero value
 		if schema != nil && !schema.isSensitive(resType, blockPath, leafAttr) {
-			if setNullToZeroValue(d.filePath, src, resType, resLabel, d.attrPath, schema) {
-				fixed++
+			if zero, ok := setNullToZeroValue(d.filePath, src, resType, resLabel, d.attrPath, schema); ok {
+				edits = append(edits, FixEdit{resType + "." + resLabel, d.attrPath, "set to " + zero, d.summary})
 			}
 			continue
 		}
@@ -387,7 +453,7 @@ func fixRequiredNulls(outputDir string, diags []requiredNullDiag, schema *Provid
 				Resource: resType + "." + resLabel,
 				Filename: d.filename,
 			})
-			fixed++
+			edits = append(edits, FixEdit{resType + "." + resLabel, d.attrPath, "replaced with var." + varName, d.summary})
 		}
 	}
 
@@ -396,17 +462,28 @@ func fixRequiredNulls(outputDir string, diags []requiredNullDiag, schema *Provid
 		appendVariables(outputDir, vars)
 	}
 
-	return vars, fixed
+	return vars, edits
 }
 
 // attrBlockPath returns the schema block path for an attribute path.
-// "code" → "", "basic_auth_credentials.0.password" → "basic_auth_credentials"
+// "code" → "", "basic_auth_credentials.0.password" → "basic_auth_credentials",
+// "sender_settings.email_address" → "sender_settings".
 func attrBlockPath(attrPath string) string {
 	parts := strings.Split(attrPath, ".")
 	if len(parts) <= 1 {
 		return ""
 	}
-	// Build block path from pairs: "block.0.nested.0.leaf" → "block.nested"
+	// Two path shapes arrive here. An SDKv2 diagnostic indexes every nested
+	// block it walks through ("basic_auth_credentials.0.password"), so the
+	// block path is every other element. A plugin-framework nested attribute
+	// — which is the whole `jamfplatform_pro_*` surface — is a plain dotted
+	// path with no index, and ProviderSchema.attrs keys those on exactly that
+	// path minus its leaf. Stepping in pairs there returned "a" for "a.b.c",
+	// missing the "a.b" key the schema actually holds, so every Required and
+	// WriteOnly probe on a nested plugin-framework attribute answered false.
+	if !hasNumericSegment(parts) {
+		return strings.Join(parts[:len(parts)-1], ".")
+	}
 	var blocks []string
 	for i := 0; i < len(parts)-1; i += 2 {
 		blocks = append(blocks, parts[i])
@@ -414,13 +491,28 @@ func attrBlockPath(attrPath string) string {
 	return strings.Join(blocks, ".")
 }
 
+// hasNumericSegment reports whether any path segment is a list index, which is
+// what distinguishes an SDKv2 block path from a dotted nested-attribute path.
+func hasNumericSegment(parts []string) bool {
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if strings.IndexFunc(p, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+			return true
+		}
+	}
+	return false
+}
+
 // setNullToZeroValue replaces a null attribute with the type-appropriate zero
 // value (empty string for strings, false for bools, 0 for numbers) in the
-// resource block matching resType/resLabel. Returns true if the attribute was set.
-func setNullToZeroValue(filePath string, src []byte, resType, resLabel, attrPath string, schema *ProviderSchema) bool {
+// resource block matching resType/resLabel. It returns the value it wrote, as
+// it appears in the file, so the caller can name the edit it made.
+func setNullToZeroValue(filePath string, src []byte, resType, resLabel, attrPath string, schema *ProviderSchema) (string, bool) {
 	f, hclDiags := hclwrite.ParseConfig(src, filePath, hcl.Pos{Line: 1, Column: 1})
 	if hclDiags.HasErrors() {
-		return false
+		return "", false
 	}
 
 	for _, block := range f.Body().Blocks() {
@@ -448,13 +540,14 @@ func setNullToZeroValue(filePath string, src []byte, resType, resLabel, attrPath
 		}
 
 		blockPath := attrBlockPath(attrPath)
-		body.SetAttributeValue(leaf, schema.zeroValue(resType, blockPath, leaf))
+		zero := schema.zeroValue(resType, blockPath, leaf)
+		body.SetAttributeValue(leaf, zero)
 		if err := os.WriteFile(filePath, f.Bytes(), 0644); err != nil {
-			return false
+			return "", false
 		}
-		return true
+		return strings.TrimSpace(string(hclwrite.TokensForValue(zero).Bytes())), true
 	}
-	return false
+	return "", false
 }
 
 // replaceNullWithVar navigates to the attribute at attrPath inside the resource
@@ -558,11 +651,18 @@ func appendVariables(outputDir string, vars []RequiredVar) {
 			varType = "string"
 		}
 		sensitive := "\n  sensitive   = true"
-		description := fmt.Sprintf("Required value for %s %s (write-only, not returned by API)", v.Resource, v.AttrPath)
+		cause := "write-only, not returned by API"
 		if v.NotSensitive {
 			sensitive = ""
-			description = fmt.Sprintf("Required value for %s %s (the tenant holds none, so it must be supplied here)", v.Resource, v.AttrPath)
+			cause = "the tenant holds none, so it must be supplied here"
 		}
+		// An explicit cause wins: the two defaults above read the variable's
+		// sensitivity as its reason for existing, which is right for a secret
+		// the API hides but wrong for a value the server simply returned empty.
+		if v.Cause != "" {
+			cause = v.Cause
+		}
+		description := fmt.Sprintf("Required value for %s %s (%s)", v.Resource, v.AttrPath, cause)
 		block := fmt.Sprintf("\nvariable %q {\n  description = %q\n  type        = %s%s\n}\n",
 			v.VarName, description, varType, sensitive,
 		)
@@ -630,22 +730,23 @@ func classifyFix(summary, detail, filePath string, line int, schema *ProviderSch
 	// the server meant, or it is required and the next pass says so in clearer
 	// terms than a size violation.
 	if m := emptyCollectionRe.FindStringSubmatch(combined); len(m) >= 2 {
-		name := m[1]
-		if i := strings.LastIndex(name, "."); i >= 0 {
-			name = name[i+1:]
+		if !provablyOptional(filePath, line, m[1], schema) {
+			return nil
 		}
-		// A Required attribute is never removed. Removing one trades this
-		// error for "the argument is required, but no definition was found",
-		// which the required-null handler answers by putting the attribute
-		// back — the two would take turns until the iteration cap.
-		if schema != nil {
-			src, _ := os.ReadFile(filePath)
-			if resType, _ := resourceAtLine(src, line); resType != "" &&
-				schema.isRequired(resType, attrBlockPath(m[1]), name) {
-				return nil
-			}
+		return &validationFix{filePath: filePath, line: line, attrName: leafAttrName(m[1])}
+	}
+
+	// Strategy 5b: an empty string rejected by a minimum-length validator, on
+	// an Optional attribute. FixValidationErrors turns the Required ones into
+	// variables the user supplies; an Optional one holding nothing is the same
+	// case as the empty collection above and gets the same answer — the server
+	// returned no value because none is set, and its absence says so more
+	// accurately than an empty string the provider refuses.
+	if m := emptyStringRe.FindStringSubmatch(combined); len(m) >= 2 {
+		if !provablyOptional(filePath, line, m[1], schema) {
+			return nil
 		}
-		return &validationFix{filePath: filePath, line: line, attrName: name}
+		return &validationFix{filePath: filePath, line: line, attrName: leafAttrName(m[1])}
 	}
 
 	// Strategy 6: AlsoRequires — "These attributes must be configured together:
@@ -666,6 +767,37 @@ func classifyFix(summary, detail, filePath string, line int, schema *ProviderSch
 	}
 
 	return nil
+}
+
+// provablyOptional reports whether the schema positively says the attribute at
+// attrPath, in the resource containing the given line, is not Required. It is
+// the guard on every removal of an attribute the server returned empty.
+//
+// It fails closed, and has to. Removing a Required attribute trades the value
+// error for "the argument is required, but no definition was found", which the
+// required-null handler answers by putting the attribute back: the two take
+// turns until the iteration cap and the run then reports success over a project
+// that does not validate. So anything that leaves the attribute unproven —
+// no schema at all (terraform providers schema failed, which the pipelines
+// reduce to a warning), an unreadable file, or a line no resource declaration
+// precedes — declines the removal rather than guessing.
+func provablyOptional(filePath string, line int, attrPath string, schema *ProviderSchema) bool {
+	if schema == nil {
+		return false
+	}
+	src, err := os.ReadFile(filePath)
+	if err != nil {
+		return false
+	}
+	resType, _ := resourceAtLine(src, line)
+	if resType == "" {
+		return false
+	}
+	// An attribute the schema does not carry is unproven too — the boolean
+	// probes report "not Required" for a missing key just as they do for an
+	// Optional one, and those are not the same answer here.
+	info, found := schema.lookupAttr(resType, attrBlockPath(attrPath), leafAttrName(attrPath))
+	return found && !info.Required
 }
 
 // splitAttrList parses the bracketed attribute list of an AlsoRequires or

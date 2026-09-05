@@ -192,14 +192,44 @@ var unmappedReads = map[string]string{
 // syntheticReads maps the resource types jamformer synthesises rather than
 // lists — they have no list resource of their own, and their bytes come from an
 // endpoint reached while processing the resource that references them.
+//
+// These are keyed by TF type, not by filter key: having no Resources entry,
+// they have no filter key to be keyed by. ResourcePermissions falls back to
+// this map so the per-resource table in PERMISSIONS.md carries a row for each,
+// and extraReads folds them into the published capability set — without that
+// an integration granted exactly the file's contents cannot repeat the export
+// that produced it.
 var syntheticReads = map[string][]readMethod{
 	// Icons are discovered from the self_service_icon references hydrated onto
 	// policies, and their bytes are served from the CDN rather than an API.
 	tIcon: nil,
-	// Branding images are downloaded per referenced id.
+	// Branding images are downloaded per referenced id. DownloadBrandingImageV1
+	// is the endpoint the bytes come from, but the spec declares no privilege
+	// for it, so the capability an integration actually has to grant is the
+	// branding listing's — which is what is named here.
 	tBrandingImage: {{"pro", "ListMacOSBrandingConfigurationsV1"}},
 	// Jamf Connect adopts an existing macOS configuration profile.
 	tJamfConnect: {{"pro", "ListJamfConnectConfigProfilesV1"}},
+}
+
+// syntheticReadNotes explains a synthetic type that reads through no API
+// endpoint at all, so its empty method list is reported as the reason it needs
+// no capability rather than falling through to "no read path is recorded" —
+// which would read as an omission from the map.
+var syntheticReadNotes = map[string]string{
+	tIcon: "icon bytes are served from the Jamf CDN, and the ids come from the " +
+		"policies that reference them, so no capability of its own is required",
+}
+
+// packageDownloadReads are the endpoints a package download reads through. They
+// are held apart from readMethods["package"] for two reasons: the JCDS file
+// store carries its own capability (`packages:read` authorises the catalogue
+// listing, not the file bytes), and the download is optional — claiming it on a
+// -skip-package-downloads run would over-grant, which is the failure this file
+// exists to prevent. extraReads adds them when downloads are enabled.
+var packageDownloadReads = []readMethod{
+	{"pro", "ListJCDSFilesV1"},
+	{"pro", "GetJCDSFileDownloadURLV1"},
 }
 
 // Permission is one resolved permission requirement for a resource type.
@@ -219,19 +249,36 @@ type Permission struct {
 }
 
 // ResourcePermissions returns the read permissions an export of this resource
-// type requires, de-duplicated and sorted by capability. The second return is
-// a reason when no permission could be resolved: either the type is
-// deliberately unmapped (see unmappedReads) or the SDK declares no privilege
-// for its endpoint, which is NOT the same as none being required.
+// type requires, de-duplicated and sorted by capability. The key is a filter
+// key for a type in the Resources table, or a TF type for one of the synthetic
+// types, which have no filter key. The second return is a reason when no
+// permission could be resolved: either the type is deliberately unmapped (see
+// unmappedReads) or the SDK declares no privilege for its endpoint, which is
+// NOT the same as none being required.
 func ResourcePermissions(filterKey string) ([]Permission, string) {
 	methods, ok := readMethods[filterKey]
+	if !ok {
+		methods, ok = syntheticReads[filterKey]
+	}
 	if !ok {
 		if reason, listed := unmappedReads[filterKey]; listed {
 			return nil, reason
 		}
 		return nil, "no read path is recorded for this resource type"
 	}
+	if len(methods) == 0 {
+		if note, noted := syntheticReadNotes[filterKey]; noted {
+			return nil, note
+		}
+	}
+	return permissionsForMethods(methods)
+}
 
+// permissionsForMethods resolves a set of SDK read methods into the capability
+// requirements an integration must grant to call them, de-duplicated by
+// capability and sorted. Shared by the per-resource lookup and by the reads
+// that belong to no resource type at all (see extraReads).
+func permissionsForMethods(methods []readMethod) ([]Permission, string) {
 	byCapability := map[string]Permission{}
 	var undeclared []string
 	for _, m := range methods {
@@ -299,17 +346,79 @@ func mergeSorted(dst, src []string) []string {
 	return dst
 }
 
+// extraRead is a read the export performs that iterating the Resources table
+// cannot find: a type jamformer synthesises rather than lists, or a download
+// path hanging off a type whose listing capability does not authorise it.
+type extraRead struct {
+	// Label names the row in PERMISSIONS.md. For a synthetic type that is the
+	// TF type; for a download path it is the TF type plus the path, because
+	// that type already has a row of its own from the table loop.
+	Label   string
+	Methods []readMethod
+	// Reason, when set, replaces the resolved capabilities in the table — the
+	// read goes through no privileged endpoint.
+	Reason string
+}
+
+// extraReads returns the reads this run performs outside the Resources table,
+// so PERMISSIONS.md publishes a set that can actually complete the export that
+// produced it. Two classes land here:
+//
+//   - the synthetic types (Self Service icons, branding images, Jamf Connect),
+//     which have no list resource and so no Resources entry — the table loop
+//     never reaches them, and the Jamf Connect capability in particular is the
+//     one whose absence silently drops every jamfplatform_pro_jamf_connect
+//     resource from the next export;
+//   - the JCDS download path, which reads the file store rather than the
+//     package catalogue and carries a separate capability for it.
+//
+// All of them ride on the federated pro surface, so an organization-scoped run
+// performs none and must claim none.
+func extraReads(scope ScopeKind, selected map[string]bool, packageDownloads bool) []extraRead {
+	if scope == ScopeOrganization {
+		return nil
+	}
+	// A nil selection means no filter at all; the pipeline has normally
+	// already replaced it with the scoped set by this point.
+	wanted := func(key string) bool { return selected == nil || selected[key] }
+
+	// Icons and branding images are synthesised from whatever referenced them
+	// and are not independently selectable, so they are always in play.
+	out := []extraRead{
+		{Label: tIcon, Methods: syntheticReads[tIcon], Reason: syntheticReadNotes[tIcon]},
+		{Label: tBrandingImage, Methods: syntheticReads[tBrandingImage]},
+	}
+	if wanted("jamf_connect") {
+		out = append(out, extraRead{Label: tJamfConnect, Methods: syntheticReads[tJamfConnect]})
+	}
+	if packageDownloads && wanted("package") {
+		out = append(out, extraRead{
+			Label:   tPackage + " (JCDS file download)",
+			Methods: packageDownloadReads,
+		})
+	}
+	return out
+}
+
 // RequiredCapabilities returns the union of read capabilities needed to export
 // the given selection, sorted. A nil selection means every resource type
-// reachable at the given scope. The result is the permission set to tick in
-// Jamf Account's picker for an integration that only has to run this export.
-func RequiredCapabilities(scope ScopeKind, selected map[string]bool) []string {
+// reachable at the given scope. packageDownloads reports whether the run
+// downloads package files, which reads the JCDS file store on top of the
+// package catalogue. The result is the permission set to tick in Jamf Account's
+// picker for an integration that only has to run this export.
+func RequiredCapabilities(scope ScopeKind, selected map[string]bool, packageDownloads bool) []string {
 	seen := map[string]bool{}
 	for _, r := range ResourcesForScope(scope) {
 		if selected != nil && !selected[r.FilterKey] {
 			continue
 		}
 		perms, _ := ResourcePermissions(r.FilterKey)
+		for _, p := range perms {
+			seen[p.Capability] = true
+		}
+	}
+	for _, e := range extraReads(scope, selected, packageDownloads) {
+		perms, _ := permissionsForMethods(e.Methods)
 		for _, p := range perms {
 			seen[p.Capability] = true
 		}
@@ -327,7 +436,10 @@ func RequiredCapabilities(scope ScopeKind, selected map[string]bool) []string {
 // with the generated project so the next person to run the export — or to
 // apply it in CI — can create an integration with the right permissions
 // instead of over-granting to make an unattributed 403 go away.
-func WritePermissionsFile(outputDir string, scope Scope, selected map[string]bool) error {
+// packageDownloads reports whether the run fetched package files, which reads
+// the JCDS file store under its own capability; a -skip-package-downloads run
+// must not claim it.
+func WritePermissionsFile(outputDir string, scope Scope, selected map[string]bool, packageDownloads bool) error {
 	var b strings.Builder
 	b.WriteString("# Required Jamf permissions\n\n")
 	fmt.Fprintf(&b, "This project was exported with an API integration at **%s scope**.\n\n", scope.Kind)
@@ -337,7 +449,7 @@ func WritePermissionsFile(outputDir string, scope Scope, selected map[string]boo
 	b.WriteString("Everything here is a **read** permission: it is what this export required. " +
 		"Applying the generated configuration needs create and update as well.\n\n")
 
-	caps := RequiredCapabilities(scope.Kind, selected)
+	caps := RequiredCapabilities(scope.Kind, selected, packageDownloads)
 	fmt.Fprintf(&b, "## Capability set (%d)\n\n```\n", len(caps))
 	for _, c := range caps {
 		b.WriteString(c + "\n")
@@ -345,22 +457,39 @@ func WritePermissionsFile(outputDir string, scope Scope, selected map[string]boo
 	b.WriteString("```\n\n## Per resource type\n\n")
 	b.WriteString("| Resource type | Capabilities | Endpoint |\n|---|---|---|\n")
 
-	for _, r := range ResourcesForScope(scope.Kind) {
-		if selected != nil && !selected[r.FilterKey] {
-			continue
-		}
-		perms, reason := ResourcePermissions(r.FilterKey)
+	row := func(label string, perms []Permission, reason string) {
 		if reason != "" {
-			fmt.Fprintf(&b, "| `%s` | _not recorded_ | %s |\n", r.TFType, reason)
-			continue
+			fmt.Fprintf(&b, "| `%s` | _not recorded_ | %s |\n", label, reason)
+			return
 		}
 		var capList, paths []string
 		for _, p := range perms {
 			capList = append(capList, "`"+p.Capability+"`")
 			paths = append(paths, "`"+p.Path+"`")
 		}
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.TFType,
+		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", label,
 			strings.Join(capList, "<br>"), strings.Join(dedupe(paths), "<br>"))
+	}
+
+	for _, r := range ResourcesForScope(scope.Kind) {
+		if selected != nil && !selected[r.FilterKey] {
+			continue
+		}
+		perms, reason := ResourcePermissions(r.FilterKey)
+		row(r.TFType, perms, reason)
+	}
+
+	// The reads the Resources table cannot describe: the synthesised types and
+	// the JCDS download path. Without these rows the file publishes a set that
+	// cannot repeat its own export — the next run's Jamf Connect discovery and
+	// package downloads 403 and degrade to warnings, and the export quietly
+	// comes out smaller.
+	for _, e := range extraReads(scope.Kind, selected, packageDownloads) {
+		perms, reason := permissionsForMethods(e.Methods)
+		if e.Reason != "" {
+			reason = e.Reason
+		}
+		row(e.Label, perms, reason)
 	}
 
 	b.WriteString("\nSourced from the Jamf Platform Go SDK's generated privilege registries, " +

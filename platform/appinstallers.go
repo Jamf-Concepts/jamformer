@@ -50,22 +50,32 @@ type aiListEvent struct {
 // the name is resolved from the App Installers catalogue, which is the same
 // place the provider should be resolving it.
 //
-// Where the catalogue cannot answer — a title withdrawn from the catalogue
-// since the deployment was created — the deployment's own name is used as a
-// fallback: Jamf Pro defaults it to the title name, so it is usually right and
-// is always better than a null the provider will reject.
+// Where that chain breaks — the catalogue read fails, the title has been
+// withdrawn from the catalogue since the deployment was created, or the
+// provider did not surface the computed app_title_id in the event payload —
+// the deployment's own name is used as a fallback: Jamf Pro defaults a
+// deployment's name to the title name, so it is usually right and is always
+// better than a null the provider rejects outright.
 //
-// Returns the number of blocks filled in. A missing events file or an
-// unreachable catalogue is not an error: it leaves the nulls in place for the
-// validation pass to report.
-func HydrateAppInstallerTitles(ctx context.Context, c appTitleLister, generatedFile, eventsFile string) (int, error) {
+// "Usually right" is not "right", though, and a wrong app_title_name names a
+// different app than the object the block imports. So the three outcomes are
+// counted separately rather than summed: filled is a title the catalogue (or
+// an app_title_name the provider actually returned) answered for, guessed is a
+// title taken from the deployment name, and unresolved counts blocks that
+// needed a title and got none — those keep their null for the validation pass
+// to report. Callers are expected to surface guessed and unresolved rather
+// than presenting the total as resolved.
+//
+// A missing events file is not an error, and neither is an unreachable
+// catalogue: both degrade into guessed/unresolved counts.
+func HydrateAppInstallerTitles(ctx context.Context, c appTitleLister, generatedFile, eventsFile string) (filled, guessed, unresolved int, err error) {
 	src, err := os.ReadFile(generatedFile)
 	if err != nil {
-		return 0, fmt.Errorf("reading generated file: %w", err)
+		return 0, 0, 0, fmt.Errorf("reading generated file: %w", err)
 	}
 	f, diags := hclwrite.ParseConfig(src, generatedFile, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return 0, fmt.Errorf("parsing generated file: %s", diags.Error())
+		return 0, 0, 0, fmt.Errorf("parsing generated file: %s", diags.Error())
 	}
 
 	// Which blocks actually need a name, keyed by import identity.
@@ -85,7 +95,7 @@ func HydrateAppInstallerTitles(ctx context.Context, c appTitleLister, generatedF
 		needed[labels[1]] = block.Body()
 	}
 	if len(needed) == 0 {
-		return 0, nil
+		return 0, 0, 0, nil
 	}
 
 	// The generated label is what the import block ties to an identity, and at
@@ -103,20 +113,21 @@ func HydrateAppInstallerTitles(ctx context.Context, c appTitleLister, generatedF
 		}
 	}
 
-	titleIDByDeployment, nameByDeployment, err := appInstallerTitlesFromEvents(eventsFile)
+	titleIDByDeployment, titleNameByDeployment, nameByDeployment, err := appInstallerTitlesFromEvents(eventsFile)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 
 	catalogue := map[string]string{}
 	if c != nil {
 		titles, listErr := c.ListAppInstallerTitlesV1(ctx, nil, "")
 		if listErr != nil {
-			// The catalogue is an optimisation over the fallback, not a
-			// requirement. Carry on with the deployment names.
-			if !Quiet {
-				fmt.Printf("  Warning: could not read the App Installers catalogue: %v\n", listErr)
-			}
+			// The catalogue is the only authoritative source of a title name,
+			// so losing it is not progress chatter to hide behind -verbose: it
+			// changes what lands in the export, every block falling through to
+			// the deployment-name guess. Report it whatever the verbosity.
+			fmt.Printf("  Warning: could not read the App Installers catalogue: %v\n", listErr)
+			fmt.Printf("           App Installer titles fall back to each deployment's own name, which may not be the title name\n")
 		}
 		for _, t := range titles {
 			if t.ID != "" && t.TitleName != "" {
@@ -125,41 +136,63 @@ func HydrateAppInstallerTitles(ctx context.Context, c appTitleLister, generatedF
 		}
 	}
 
-	filled := 0
 	for label, body := range needed {
 		deploymentID := labelToID[label]
-		name := ""
-		if titleID := titleIDByDeployment[deploymentID]; titleID != "" {
-			name = catalogue[titleID]
+
+		// Authoritative, in order: an app_title_name the provider itself
+		// returned in the event payload (it does not today, but if that is
+		// ever fixed it beats a second lookup), then the catalogue entry for
+		// the deployment's computed app_title_id.
+		name := titleNameByDeployment[deploymentID]
+		authoritative := name != ""
+		if !authoritative {
+			if titleID := titleIDByDeployment[deploymentID]; titleID != "" {
+				if t := catalogue[titleID]; t != "" {
+					name, authoritative = t, true
+				}
+			}
 		}
 		if name == "" {
 			name = nameByDeployment[deploymentID]
 		}
 		if name == "" {
+			// Nothing to write. Leaving the null in place is deliberate: the
+			// validation pass reports a Required null, whereas an invented
+			// value would import silently under the wrong app's name.
+			unresolved++
 			continue
 		}
 		body.SetAttributeValue("app_title_name", cty.StringVal(name))
-		filled++
-	}
-	if filled == 0 {
-		return 0, nil
+		if authoritative {
+			filled++
+		} else {
+			guessed++
+		}
 	}
 
-	if err := os.WriteFile(generatedFile, f.Bytes(), 0644); err != nil {
-		return 0, fmt.Errorf("writing generated file: %w", err)
+	// A guessed-only run still has to write: the guess is what makes the block
+	// plannable at all.
+	if filled+guessed == 0 {
+		return filled, guessed, unresolved, nil
 	}
-	return filled, nil
+	if err := os.WriteFile(generatedFile, f.Bytes(), 0644); err != nil {
+		return 0, 0, 0, fmt.Errorf("writing generated file: %w", err)
+	}
+	return filled, guessed, unresolved, nil
 }
 
-// appInstallerTitlesFromEvents reads the app_title_id and name each App
-// Installer deployment reported, keyed by deployment id.
-func appInstallerTitlesFromEvents(eventsFile string) (titleIDs, names map[string]string, err error) {
-	titleIDs, names = map[string]string{}, map[string]string{}
+// appInstallerTitlesFromEvents reads what each App Installer deployment
+// reported, keyed by deployment id: its computed app_title_id, any
+// app_title_name the provider actually returned, and the deployment's own
+// name. The last two are kept apart because a deployment name is only a guess
+// at the title name, and the caller counts the two outcomes separately.
+func appInstallerTitlesFromEvents(eventsFile string) (titleIDs, titleNames, names map[string]string, err error) {
+	titleIDs, titleNames, names = map[string]string{}, map[string]string{}, map[string]string{}
 	f, err := os.Open(eventsFile)
 	if err != nil {
 		// No event log (a cached or resumed run): the caller falls back to
 		// whatever the catalogue and the config already carry.
-		return titleIDs, names, nil
+		return titleIDs, titleNames, names, nil
 	}
 	defer func() { _ = f.Close() }()
 
@@ -178,17 +211,17 @@ func appInstallerTitlesFromEvents(eventsFile string) (titleIDs, names map[string
 			continue
 		}
 		obj := ev.ListResourceFound.ResourceObject
-		// If the provider ever starts returning the name, prefer it.
 		if obj.AppTitleName != "" {
-			names[id] = obj.AppTitleName
-		} else if obj.Name != "" {
+			titleNames[id] = obj.AppTitleName
+		}
+		if obj.Name != "" {
 			names[id] = obj.Name
 		}
 		if obj.AppTitleID != "" {
 			titleIDs[id] = obj.AppTitleID
 		}
 	}
-	return titleIDs, names, scanner.Err()
+	return titleIDs, titleNames, names, scanner.Err()
 }
 
 // importTargetLabel returns the label an import block targets, when it targets

@@ -381,13 +381,24 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 		// and nothing to invent. Dropping it keeps the export plannable, the
 		// same call the blueprint-draft skip above makes.
 		if resourceType == "jamfplatform_pro_cloud_identity_provider" {
-			if missing := missingCloudIdPBlock(block.Body()); missing != "" {
-				name := labels[1]
-				if nm := block.Body().GetAttribute("display_name"); nm != nil {
-					if v := ExtractStringValue(nm); v != "" {
-						name = v
-					}
+			missing, unknown := missingCloudIdPBlock(block.Body())
+			name := labels[1]
+			if nm := block.Body().GetAttribute("display_name"); nm != nil {
+				if v := ExtractStringValue(nm); v != "" {
+					name = v
 				}
+			}
+			// A discriminator this build does not know about cannot be judged,
+			// so the resource stays — but it is said aloud, since the shape
+			// that needs skipping is exactly the one nothing downstream can
+			// repair, and a silent pass would surface as an unexplained plan
+			// failure instead.
+			if unknown && !Quiet {
+				fmt.Printf("  Warning: cloud identity provider %q has an unrecognised provider_name %q — "+
+					"leaving it in place; check its credentials block before applying\n",
+					name, ExtractStringValue(block.Body().GetAttribute("provider_name")))
+			}
+			if missing != "" {
 				if !Quiet {
 					fmt.Printf("  Skipping cloud identity provider %q: the provider returned no %s block "+
 						"(it carries credentials no read exposes)\n", name, missing)
@@ -763,22 +774,34 @@ var cloudIdPBlockForProvider = map[string]string{
 
 // missingCloudIdPBlock returns the name of the credentials block a cloud
 // identity provider's provider_name requires but which is absent or null, or ""
-// when nothing is missing (or the discriminator is one we do not know, in which
-// case the resource is left alone for validation to judge).
-func missingCloudIdPBlock(body *hclwrite.Body) string {
+// when nothing is missing.
+//
+// unknown reports a provider_name the map above does not cover — a third IdP
+// type, or a renamed discriminator. That case cannot be judged either way: the
+// block it needs has no name here, so neither the skip nor the all-clear is
+// honest, and the caller says so out loud. Falling through silently was the
+// worse answer, because the auto-fix cannot repair this shape — the missing
+// block holds credentials no read exposes, so there is nothing to remove and
+// nothing to invent — and the export would ship a resource that will not plan
+// with no indication of why.
+func missingCloudIdPBlock(body *hclwrite.Body) (missing string, unknown bool) {
 	attr := body.GetAttribute("provider_name")
 	if attr == nil {
-		return ""
+		// No discriminator to read. Whatever is wrong with the resource, it is
+		// not this check's to name — provider_name is Required, so the
+		// validation auto-fix reports it in its own terms.
+		return "", false
 	}
-	required, ok := cloudIdPBlockForProvider[ExtractStringValue(attr)]
+	name := ExtractStringValue(attr)
+	required, ok := cloudIdPBlockForProvider[name]
 	if !ok {
-		return ""
+		return "", true
 	}
 	block := body.GetAttribute(required)
 	if block == nil || isNullAttr(block) {
-		return required
+		return required, false
 	}
-	return ""
+	return "", false
 }
 
 // hasEmptyDeviceGroups reports whether a blueprint's device_groups list is

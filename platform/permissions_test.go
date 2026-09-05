@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -137,7 +139,7 @@ func TestPatchSoftwareTitleRequiresSourceCatalogues(t *testing.T) {
 }
 
 func TestRequiredCapabilitiesIsScopeAware(t *testing.T) {
-	org := RequiredCapabilities(ScopeOrganization, nil)
+	org := RequiredCapabilities(ScopeOrganization, nil, true)
 	// Organization scope reaches the Jamf Account family and nothing else, so
 	// its capability set is exactly the SSO pair.
 	if len(org) != 2 {
@@ -149,8 +151,8 @@ func TestRequiredCapabilitiesIsScopeAware(t *testing.T) {
 		}
 	}
 
-	env := RequiredCapabilities(ScopeEnvironment, nil)
-	tenant := RequiredCapabilities(ScopeTenant, nil)
+	env := RequiredCapabilities(ScopeEnvironment, nil, true)
+	tenant := RequiredCapabilities(ScopeTenant, nil, true)
 	if len(env) <= len(tenant) {
 		t.Errorf("environment scope should require more capabilities than tenant scope (env=%d tenant=%d)", len(env), len(tenant))
 	}
@@ -174,6 +176,143 @@ func TestRequiredCapabilitiesIsScopeAware(t *testing.T) {
 func contains(hay []string, needle string) bool {
 	for _, v := range hay {
 		if v == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEveryExtraReadHasReadPermissions is TestEveryResourceHasReadPermissions
+// for the reads no Resources entry covers. Dropping a synthetic type's methods
+// or the JCDS pair from the map silently publishes a capability set that cannot
+// complete the export that produced it, which is exactly the failure the
+// per-resource guard above prevents for the table.
+func TestEveryExtraReadHasReadPermissions(t *testing.T) {
+	for _, key := range []string{tIcon, tBrandingImage, tJamfConnect} {
+		methods, mapped := syntheticReads[key]
+		if !mapped {
+			t.Errorf("%s: no syntheticReads entry", key)
+			continue
+		}
+		if len(methods) > 0 {
+			continue
+		}
+		// An empty method list is only honest with a note saying why nothing
+		// is read through a privileged endpoint.
+		if _, noted := syntheticReadNotes[key]; !noted {
+			t.Errorf("%s: syntheticReads entry is empty and syntheticReadNotes has no reason for it", key)
+		}
+	}
+
+	if len(packageDownloadReads) == 0 {
+		t.Fatal("packageDownloadReads is empty — package downloads are on by default and read the JCDS file store")
+	}
+	perms, reason := permissionsForMethods(packageDownloadReads)
+	if reason != "" {
+		t.Fatalf("packageDownloadReads resolved no capability: %s", reason)
+	}
+	if !hasCapability(perms, "jamf-cloud-distribution-service-files:read") {
+		t.Errorf("packageDownloadReads must require the JCDS file capability, got %v", perms)
+	}
+}
+
+// The synthetic types have no Resources entry, so ResourcePermissions is the
+// only way they reach PERMISSIONS.md. Before this fallback existed syntheticReads
+// was read by nothing but a test.
+func TestResourcePermissionsFallsBackToSyntheticReads(t *testing.T) {
+	perms, reason := ResourcePermissions(tJamfConnect)
+	if reason != "" {
+		t.Fatalf("%s: unexpected reason %q", tJamfConnect, reason)
+	}
+	if !hasCapability(perms, "jamf-connect-deployments:read") {
+		t.Errorf("%s: want jamf-connect-deployments:read, got %v", tJamfConnect, perms)
+	}
+
+	// Icons read through no privileged endpoint at all, and must say so rather
+	// than fall through to "no read path is recorded", which reads as a gap in
+	// the map.
+	if perms, reason := ResourcePermissions(tIcon); len(perms) != 0 || reason == "" {
+		t.Errorf("%s: want a reason and no capabilities, got %v / %q", tIcon, perms, reason)
+	}
+}
+
+// An integration granted exactly the capability set in PERMISSIONS.md has to be
+// able to repeat the export. Without these, Jamf Connect discovery and the JCDS
+// downloads 403 on the second run, each degrading to a warning, and the export
+// silently comes out smaller.
+func TestRequiredCapabilitiesCoversSyntheticAndDownloadReads(t *testing.T) {
+	const jcds = "jamf-cloud-distribution-service-files:read"
+
+	withDownloads := RequiredCapabilities(ScopeTenant, nil, true)
+	for _, cap := range []string{"jamf-connect-deployments:read", "self-service:read", jcds} {
+		if !contains(withDownloads, cap) {
+			t.Errorf("tenant scope with package downloads is missing %s", cap)
+		}
+	}
+
+	// -skip-package-downloads reads no file bytes, so claiming the capability
+	// would over-grant.
+	if noDownloads := RequiredCapabilities(ScopeTenant, nil, false); contains(noDownloads, jcds) {
+		t.Errorf("%s must not be claimed when package downloads are disabled", jcds)
+	}
+
+	// Organization scope reaches none of the federated pro surface, so it
+	// performs none of these reads and must claim none of them.
+	org := RequiredCapabilities(ScopeOrganization, nil, true)
+	for _, cap := range []string{"jamf-connect-deployments:read", jcds} {
+		if contains(org, cap) {
+			t.Errorf("organization scope must not require %s", cap)
+		}
+	}
+
+	// A selection that excludes packages excludes their download too.
+	sel := map[string]bool{"policy": true, "jamf_connect": true}
+	if got := RequiredCapabilities(ScopeTenant, sel, true); contains(got, jcds) {
+		t.Errorf("%s must not be claimed when packages are not selected", jcds)
+	}
+}
+
+// PERMISSIONS.md itself must carry the rows, not just the capability block —
+// the per-resource table is how a reader checks the claim.
+func TestWritePermissionsFileListsExtraReads(t *testing.T) {
+	dir := t.TempDir()
+	if err := WritePermissionsFile(dir, Scope{Kind: ScopeTenant, ID: "t1"}, nil, true); err != nil {
+		t.Fatalf("WritePermissionsFile: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "PERMISSIONS.md"))
+	if err != nil {
+		t.Fatalf("reading PERMISSIONS.md: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		tIcon,
+		tBrandingImage,
+		tJamfConnect,
+		"JCDS file download",
+		"jamf-cloud-distribution-service-files:read",
+		"/v1/jcds/files",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("PERMISSIONS.md does not mention %q", want)
+		}
+	}
+
+	skipDir := t.TempDir()
+	if err := WritePermissionsFile(skipDir, Scope{Kind: ScopeTenant, ID: "t1"}, nil, false); err != nil {
+		t.Fatalf("WritePermissionsFile: %v", err)
+	}
+	skipped, err := os.ReadFile(filepath.Join(skipDir, "PERMISSIONS.md"))
+	if err != nil {
+		t.Fatalf("reading PERMISSIONS.md: %v", err)
+	}
+	if strings.Contains(string(skipped), "jamf-cloud-distribution-service-files:read") {
+		t.Error("PERMISSIONS.md claims the JCDS capability on a -skip-package-downloads run")
+	}
+}
+
+func hasCapability(perms []Permission, cap string) bool {
+	for _, p := range perms {
+		if p.Capability == cap {
 			return true
 		}
 	}
