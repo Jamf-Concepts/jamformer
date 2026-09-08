@@ -238,7 +238,12 @@ func rewriteSingleAttribute(body *hclwrite.Body, rule ReferenceRule, reg *regist
 		}
 	}
 
-	// Couldn't resolve — leave as-is and add a TODO comment
+	// Couldn't resolve. Where the field accepts IDs from outside the export the
+	// value stands on its own, so it is left untouched and unmarked; otherwise a
+	// TODO marker records the reference the export could not tie down.
+	if rule.AllowUnresolved {
+		return false
+	}
 	body.SetAttributeRaw(rule.AttrName, todoTokens(val))
 	return true
 }
@@ -326,9 +331,10 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 
 	// Per-element rewrite uses a single-attribute rule keyed on ElementAttr.
 	elemRule := ReferenceRule{
-		AttrName:    rule.ElementAttr,
-		TargetTypes: rule.TargetTypes,
-		TargetAttr:  rule.TargetAttr,
+		AttrName:        rule.ElementAttr,
+		TargetTypes:     rule.TargetTypes,
+		TargetAttr:      rule.TargetAttr,
+		AllowUnresolved: rule.AllowUnresolved,
 	}
 
 	modified := false
@@ -350,11 +356,11 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 				}
 				er := elemRule
 				if rule.DiscriminatorAttr != "" {
-					target, ok := discriminatorTarget(leaf, rule)
+					targets, ok := discriminatorTarget(leaf, rule)
 					if !ok {
 						return false
 					}
-					er.TargetTypes = []string{target}
+					er.TargetTypes = targets
 				}
 				return rewriteSingleAttribute(leaf, er, reg)
 			}); ok {
@@ -453,15 +459,18 @@ func RewriteListElementField(body *hclwrite.Body, attrName, elemAttr string, res
 }
 
 // discriminatorTarget reads the rule's DiscriminatorAttr from a list element and
-// maps its value to a target resource type via DiscriminatorMap. Returns false
-// when the discriminator is absent or its value is unmapped.
-func discriminatorTarget(leaf *hclwrite.Body, rule ReferenceRule) (string, bool) {
+// maps its value to the candidate target resource types via DiscriminatorMap.
+// Returns false when the discriminator is absent or its value is unmapped.
+func discriminatorTarget(leaf *hclwrite.Body, rule ReferenceRule) ([]string, bool) {
 	attr := leaf.GetAttribute(rule.DiscriminatorAttr)
 	if attr == nil {
-		return "", false
+		return nil, false
 	}
-	target, ok := rule.DiscriminatorMap[ExtractStringValue(attr)]
-	return target, ok
+	targets, ok := rule.DiscriminatorMap[ExtractStringValue(attr)]
+	if !ok || len(targets) == 0 {
+		return nil, false
+	}
+	return targets, true
 }
 
 // rewritePrefixedID rewrites an attribute whose value is an ID carried behind a
@@ -489,10 +498,11 @@ func rewritePrefixedID(body *hclwrite.Body, attrName string, rule ReferenceRule,
 
 	// Longest matching prefix wins, so that "computer_" is preferred over a
 	// hypothetical "c_" and the map's iteration order cannot change the result.
-	bestPrefix, bestTarget := "", ""
-	for prefix, target := range rule.DiscriminatorMap {
+	bestPrefix := ""
+	var bestTargets []string
+	for prefix, targets := range rule.DiscriminatorMap {
 		if strings.HasPrefix(val, prefix) && len(prefix) > len(bestPrefix) {
-			bestPrefix, bestTarget = prefix, target
+			bestPrefix, bestTargets = prefix, targets
 		}
 	}
 	if bestPrefix == "" {
@@ -503,7 +513,12 @@ func rewritePrefixedID(body *hclwrite.Body, attrName string, rule ReferenceRule,
 	if tail == "" {
 		return false
 	}
-	ref, ok := reg.AttrReference(bestTarget, tail, rule.TargetAttr)
+	ref, ok := "", false
+	for _, target := range bestTargets {
+		if ref, ok = reg.AttrReference(target, tail, rule.TargetAttr); ok {
+			break
+		}
+	}
 	if !ok {
 		return false
 	}

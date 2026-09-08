@@ -735,18 +735,21 @@ func DefaultRules() []postprocess.ReferenceRule {
 			AttrName:          "criteria",
 			ElementAttr:       "value",
 			DiscriminatorAttr: "criteria",
-			DiscriminatorMap: map[string]string{
-				"Computer Group":      DeviceGroupComputerNameType,
-				"Mobile Device Group": DeviceGroupMobileNameType,
+			DiscriminatorMap: map[string][]string{
+				"Computer Group":      {DeviceGroupComputerNameType},
+				"Mobile Device Group": {DeviceGroupMobileNameType},
 			},
 			TargetAttr: "name",
 		},
-		// User-group "User Group" member-of criteria carry the target group's ID
-		// in `value` on read (Jamf 11.29 read regression — the user-group list path
-		// leaves it unresolved). Look it up by that id, but emit a reference to the
-		// group's .name: name is the provider's author-by-name contract (the write
-		// is a pure pass-through that accepts the name) and the provider's Read
-		// reverse-resolves the wire id back to the name in state, so a .name
+		// User-group "User Group" member-of criteria carry the target group in
+		// `value` in one of two forms, depending on what the tenant's Jamf Pro
+		// returns: its numeric ID (the Jamf 11.29 read regression, where the
+		// user-group list path leaves the wire id unresolved) or its name (where
+		// the read reverse-resolves it). Both are looked up — by id against the
+		// id-keyed type, by name against UserGroupNameType — and either way the
+		// reference emitted is to the group's .name: name is the provider's
+		// author-by-name contract (the write is a pure pass-through that accepts
+		// the name) and the provider's Read puts the name in state, so a .name
 		// reference matches state directly instead of relying on id<->name plan
 		// suppression every apply.
 		{
@@ -754,7 +757,7 @@ func DefaultRules() []postprocess.ReferenceRule {
 			AttrName:          "criteria",
 			ElementAttr:       "value",
 			DiscriminatorAttr: "name",
-			DiscriminatorMap:  map[string]string{"User Group": tUserGroup},
+			DiscriminatorMap:  map[string][]string{"User Group": {tUserGroup, UserGroupNameType}},
 			TargetAttr:        "name",
 		},
 
@@ -836,11 +839,11 @@ func DefaultRules() []postprocess.ReferenceRule {
 			AttrName:          "onboarding_items",
 			ElementAttr:       "entity_id",
 			DiscriminatorAttr: "self_service_entity_type",
-			DiscriminatorMap: map[string]string{
-				"OS_X_POLICY":         policy,
-				"OS_X_CONFIG_PROFILE": macProfile,
-				"OS_X_MAC_APP":        macApp,
-				"OS_X_EBOOK":          ebook,
+			DiscriminatorMap: map[string][]string{
+				"OS_X_POLICY":         {policy},
+				"OS_X_CONFIG_PROFILE": {macProfile},
+				"OS_X_MAC_APP":        {macApp},
+				"OS_X_EBOOK":          {ebook},
 			},
 			TargetAttr: "id",
 		},
@@ -851,13 +854,13 @@ func DefaultRules() []postprocess.ReferenceRule {
 		// catalogue with no resource to point at, so they stay as raw IDs;
 		// ResolveAny tries both of the types an export can own.
 		{ResourceType: tSCZtnaApp, AttrName: "device_group_ids", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id", IsList: true},
-		{ResourceType: tSCZtnaApp, AttrPath: []string{"routing"}, AttrName: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id"},
+		{ResourceType: tSCZtnaApp, AttrPath: []string{"routing"}, AttrName: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id", AllowUnresolved: true},
 		{ResourceType: tSCZtnaApp, AttrName: "routing_overrides", ElementAttr: "device_group_ids", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id", IsList: true},
 		// Grouped-gateway members are always the tenant's own dedicated gateways
 		// (a shared gateway is refused), so this resolves to one type only.
 		{ResourceType: tSCZtnaGroupedGateway, AttrName: "gateway_ids", TargetTypes: []string{tSCZtnaGateway}, TargetAttr: "id", IsList: true},
 		// Each authoritative name server names the gateway it is reached through.
-		{ResourceType: tSCDnsZone, AttrName: "authoritative_name_servers", ElementAttr: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id"},
+		{ResourceType: tSCDnsZone, AttrName: "authoritative_name_servers", ElementAttr: "gateway_id", TargetTypes: []string{tSCZtnaGateway, tSCZtnaGroupedGateway}, TargetAttr: "id", AllowUnresolved: true},
 		// UEM Connect group membership: the Security Cloud side of each mapping,
 		// plus the default group unmatched devices join.
 		{ResourceType: tSCUemConnect, AttrPath: []string{"group_membership_mapping"}, AttrName: "default_security_cloud_group_id", TargetTypes: []string{tSCDeviceGroup}, TargetAttr: "id"},
@@ -873,9 +876,9 @@ func DefaultRules() []postprocess.ReferenceRule {
 			AttrName:     "mappings",
 			ElementAttr:  "uem_group_id",
 			PrefixedIDs:  true,
-			DiscriminatorMap: map[string]string{
-				"computer_": DeviceGroupComputerType,
-				"mobile_":   DeviceGroupMobileType,
+			DiscriminatorMap: map[string][]string{
+				"computer_": {DeviceGroupComputerType},
+				"mobile_":   {DeviceGroupMobileType},
 			},
 			TargetAttr: "jamf_pro_id",
 		},

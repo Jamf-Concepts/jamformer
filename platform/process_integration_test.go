@@ -495,3 +495,120 @@ resource "jamfplatform_pro_return_to_service" "rts" {
 		t.Errorf("-2 sentinel should not be flagged unresolved:\n%s", dp)
 	}
 }
+
+// TestUserGroupCriteriaResolvesNameForm covers the other wire form of a
+// user-group "User Group" member-of criterion. TestPlatformCriteriaReferences
+// pins the numeric-ID form (the Jamf 11.29 read regression); a tenant whose
+// read reverse-resolves the id sends the group's name instead, and that has to
+// resolve to the same .name reference rather than fall through to a raw value
+// with a TODO marker.
+func TestUserGroupCriteriaResolvesNameForm(t *testing.T) {
+	dir := t.TempDir()
+	generated := `
+resource "jamfplatform_pro_user_group" "members" {
+  name       = "Members"
+  group_type = "smart"
+  criteria = [
+    {
+      and_or      = "and"
+      name        = "User Group"
+      search_type = "member of"
+      priority    = 0
+      value       = "Staff"
+    },
+  ]
+}
+
+resource "jamfplatform_pro_user_group" "staff" {
+  name       = "Staff"
+  group_type = "static"
+}
+`
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := registry.New()
+	// Registered by ID, as discovery does — the value on the wire here is the
+	// name, so only the name index can match it.
+	reg.Register("jamfplatform_pro_user_group", "7", "jamfplatform_pro_user_group.staff")
+
+	if err := PopulateCriteriaNameIndexes(genFile, reg); err != nil {
+		t.Fatalf("PopulateCriteriaNameIndexes: %v", err)
+	}
+	if _, ok := reg.Resolve(UserGroupNameType, "Staff"); !ok {
+		t.Fatal("user-group name index not populated")
+	}
+	if err := postprocess.Process(dir, genFile, reg, &postprocess.ProcessOptions{
+		TypeToFileMap: TypeToFileMap(),
+		Rules:         DefaultRules(),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	out, err := os.ReadFile(filepath.Join(dir, "pro_user_group.tf"))
+	if err != nil {
+		t.Fatalf("reading pro_user_group.tf: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "jamfplatform_pro_user_group.staff.name") {
+		t.Errorf("name-form user-group member-of not resolved:\n%s", got)
+	}
+	if strings.Contains(got, "TODO") {
+		t.Errorf("resolved criterion should carry no TODO marker:\n%s", got)
+	}
+}
+
+// TestSharedGatewayIDLeavesNoTodo pins the AllowUnresolved contract on the two
+// Security Cloud gateway references. A gateway field accepts either the
+// tenant's own gateway or one of Jamf's shared gateways, and the shared ones
+// are a Jamf-maintained catalogue with no resource to point at, so an
+// unresolved value there is correct output rather than a broken reference.
+func TestSharedGatewayIDLeavesNoTodo(t *testing.T) {
+	dir := t.TempDir()
+	generated := `
+resource "jamfplatform_security_cloud_dns_zone" "internal" {
+  name    = "Internal Services"
+  domains = ["corp.example.com"]
+  authoritative_name_servers = [
+    {
+      ip_address = "203.0.113.53"
+      gateway_id = "a7d2"
+    },
+  ]
+}
+
+resource "jamfplatform_security_cloud_ztna_app" "wiki" {
+  name = "Wiki"
+  routing = {
+    gateway_id = "a7d2"
+  }
+}
+`
+	genFile := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(genFile, []byte(generated), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := postprocess.Process(dir, genFile, registry.New(), &postprocess.ProcessOptions{
+		TypeToFileMap: TypeToFileMap(),
+		Rules:         DefaultRules(),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	for _, name := range []string{"security_cloud_dns_zones.tf", "security_cloud_ztna_apps.tf"} {
+		out, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		got := string(out)
+		if strings.Contains(got, "TODO") {
+			t.Errorf("%s: shared gateway id should carry no TODO marker:\n%s", name, got)
+		}
+		if !strings.Contains(got, `"a7d2"`) {
+			t.Errorf("%s: gateway id should be left verbatim:\n%s", name, got)
+		}
+	}
+}

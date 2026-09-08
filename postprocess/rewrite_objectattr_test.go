@@ -84,10 +84,10 @@ resource "jamfplatform_pro_macos_onboarding" "singleton" {
 		AttrName:          "onboarding_items",
 		ElementAttr:       "entity_id",
 		DiscriminatorAttr: "self_service_entity_type",
-		DiscriminatorMap: map[string]string{
-			"OS_X_POLICY":         "jamfplatform_pro_policy",
-			"OS_X_CONFIG_PROFILE": "jamfplatform_pro_macos_configuration_profile",
-			"OS_X_MAC_APP":        "jamfplatform_pro_mac_app_store_app",
+		DiscriminatorMap: map[string][]string{
+			"OS_X_POLICY":         {"jamfplatform_pro_policy"},
+			"OS_X_CONFIG_PROFILE": {"jamfplatform_pro_macos_configuration_profile"},
+			"OS_X_MAC_APP":        {"jamfplatform_pro_mac_app_store_app"},
 		},
 		TargetAttr: "id",
 	}

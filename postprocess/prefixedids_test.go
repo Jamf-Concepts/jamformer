@@ -27,9 +27,9 @@ func prefixRule() ReferenceRule {
 		AttrName:     "mappings",
 		ElementAttr:  "uem_group_id",
 		PrefixedIDs:  true,
-		DiscriminatorMap: map[string]string{
-			"computer_": "jamfplatform_device_group#computer",
-			"mobile_":   "jamfplatform_device_group#mobile",
+		DiscriminatorMap: map[string][]string{
+			"computer_": {"jamfplatform_device_group#computer"},
+			"mobile_":   {"jamfplatform_device_group#mobile"},
 		},
 		TargetAttr: "jamf_pro_id",
 	}
