@@ -186,7 +186,7 @@ The tool generates a self-contained Terraform project in the output directory:
 
 - `provider.tf`, `variables.tf`, `terraform.tfvars` — provider configuration (credentials are not written to tfvars for security)
 - Per-type resource files — for Jamf Platform, the federated Jamf Pro surface uses a `pro_` prefix (e.g. `pro_policy.tf`, `pro_script.tf`), while native Platform resources keep the plain type name (`blueprints.tf`, `device_groups.tf`); other providers use the plain type name too (e.g. `policies.tf`, `scripts.tf`)
-- Per-type import block files (e.g. `pro_policy_import.tf`, `policies_import.tf`), plus `singletons_import.tf` for singleton settings and, for Jamf Platform, `jamf_connect_import.tf`
+- Per-type import block files (e.g. `pro_policy_import.tf`, `policies_import.tf`) — for Jamf Platform this covers the settings singletons and adopted Jamf Connect profiles too, each in its own type's file; the Jamf Pro and Jamf Protect pipelines write a combined `singletons_import.tf`
 - `support_files/` — extracted scripts, configuration profiles, app configurations, packages, and branding images; `device_enrollment_tokens/` and `volume_purchasing_tokens/` directories are created as the recommended location for token files
 - `PERMISSIONS.md` (Jamf Platform) — the read capability set the export required, per resource type, with the endpoint behind each requirement
 

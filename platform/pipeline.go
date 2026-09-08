@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -48,7 +49,6 @@ type IntermediateResult struct {
 	OutputDir       string               // working directory
 	PackageFiles    map[string]string    // JCDS file_name → relative path
 	Resources       []DiscoveredResource // flat (type, label, name, id) list for multi-env matching
-	ImportFiles     []string             // extra import files (singletons, jamf_connect) left in place
 	PlatformCreds   *importgen.PlatformCredentials
 	ProviderSchemas any // *tfjson.ProviderSchemas (kept as interface to avoid import in callers)
 }
@@ -131,6 +131,50 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 	return fixResult, nil
 }
 
+// mergeImportFiles appends the import blocks held in each of paths to the
+// generated file and deletes the file it took them from, so the post-processing
+// splitter routes them into the same per-type *_import.tf files as the ones
+// `terraform query` wrote and nothing downstream reads a block twice. A path
+// that does not exist is skipped: neither set of imports is written on every
+// run.
+func mergeImportFiles(generatedFile string, paths []string) error {
+	var merged []byte
+	var consumed []string
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if len(bytes.TrimSpace(src)) == 0 {
+			continue
+		}
+		merged = append(merged, '\n')
+		merged = append(merged, bytes.TrimRight(src, "\n")...)
+		merged = append(merged, '\n')
+		consumed = append(consumed, path)
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(generatedFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(merged); err != nil {
+		return err
+	}
+	// Delete what was folded in, so nothing downstream reads the same import
+	// block twice — the step-8 cleanup would only get to them later.
+	for _, path := range consumed {
+		_ = os.Remove(path)
+	}
+	return nil
+}
+
 // CleanupIntermediateFiles removes the working files produced during discovery
 // and generation once post-processing has split them into per-type files.
 func CleanupIntermediateFiles(outputDir string) {
@@ -142,10 +186,11 @@ func CleanupIntermediateFiles(outputDir string) {
 // RunDiscoveryAndGenerate executes steps 1–6 of the Jamf Platform pipeline
 // (generate config → init → query → jamf_connect/singleton/icon/branding
 // synthesis → package download → schema load) and returns the intermediate
-// results without post-processing. The generated.tf and import files are left
-// in place so callers can both post-process and enumerate the discovered
-// resources. Used by both the single-env RunPipeline and the multi-env merge
-// pipeline.
+// results without post-processing. generated.tf is left in place — carrying
+// every import block, including the singleton and Jamf Connect ones folded in
+// from their own files — so callers can both post-process it and enumerate the
+// discovered resources. Used by both the single-env RunPipeline and the
+// multi-env merge pipeline.
 func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error) {
 	// Set quiet/verbose flags for sub-packages
 	Quiet = opts.Quiet
@@ -390,6 +435,29 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		return nil, fmt.Errorf("finalizing provider config: %w", err)
 	}
 
+	importFiles := []string{
+		filepath.Join(opts.OutputDir, "singletons_import.tf"),
+		filepath.Join(opts.OutputDir, "jamf_connect_import.tf"),
+	}
+
+	// 4c. Fold the singleton and Jamf Connect import blocks into generated.tf.
+	// The list-resource imports are already there — `terraform query` writes them
+	// beside the config it generates — but these two sets live in their own files
+	// because they had to exist before the plan that materialised their config.
+	// Post-processing splits import blocks out of generated.tf alone and the
+	// step-8 cleanup deletes those files, so without this the export ships no
+	// import block for the settings singletons or the adopted Jamf Connect
+	// profiles, and a plan on it proposes to create settings that already exist.
+	//
+	// This has to happen before the label rename below: renaming rewrites the
+	// `to` address of every import block it can see, and a singleton whose label
+	// is composed from an attribute rather than left as "singleton" (the Security
+	// Cloud search domain, keyed on its domain_name) would otherwise keep an
+	// import block pointing at an address no resource carries.
+	if err := mergeImportFiles(generatedFile, importFiles); err != nil {
+		return nil, fmt.Errorf("merging import blocks: %w", err)
+	}
+
 	// 5. Rename auto-generated labels (all_0, all_1) to friendly names, folding
 	// device_type into jamfplatform_device_group labels.
 	if err := RenameLabels(generatedFile); err != nil {
@@ -529,14 +597,9 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	}
 
 	// Enumerate the discovered resources (type, label, name, id) for multi-env
-	// matching. Joins resource blocks in generated.tf with their import blocks
-	// (list imports live in generated.tf; singleton/jamf_connect imports live in
-	// their own files, still present at this point).
-	importFiles := []string{
-		filepath.Join(opts.OutputDir, "singletons_import.tf"),
-		filepath.Join(opts.OutputDir, "jamf_connect_import.tf"),
-	}
-	discovered, err := CollectResourceRefs(generatedFile, importFiles...)
+	// matching. Every import block now lives in generated.tf: step 4c folded the
+	// singleton and Jamf Connect files in and deleted them.
+	discovered, err := CollectResourceRefs(generatedFile)
 	if err != nil && !opts.Quiet {
 		fmt.Printf("  Warning: could not enumerate discovered resources: %v\n", err)
 	}
@@ -547,7 +610,6 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		OutputDir:       opts.OutputDir,
 		PackageFiles:    packageFiles,
 		Resources:       discovered,
-		ImportFiles:     importFiles,
 		PlatformCreds:   platformCreds,
 		ProviderSchemas: schemas,
 	}, nil

@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Jamf-Concepts/jamformer/postprocess"
+	"github.com/Jamf-Concepts/jamformer/registry"
 )
 
 func TestWriteSingletonImportsUsesIdentityForm(t *testing.T) {
@@ -83,5 +86,53 @@ func TestWriteSingletonImportsHonoursSelection(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir2, "singletons_import.tf")); !os.IsNotExist(err) {
 		t.Error("singletons_import.tf should not exist when nothing was selected")
+	}
+}
+
+// TestMergeImportFilesFeedsTheSplitter pins the fix for an export that shipped
+// no import block for its settings singletons. The singleton and Jamf Connect
+// import blocks are written to their own files before the plan that
+// materialises their config, but post-processing only splits import blocks out
+// of generated.tf and the cleanup step deletes those files — so they have to be
+// folded in first, or a plan on the export proposes to create the settings it
+// just read.
+func TestMergeImportFilesFeedsTheSplitter(t *testing.T) {
+	dir := t.TempDir()
+	generated := filepath.Join(dir, "generated.tf")
+	if err := os.WriteFile(generated, []byte(`resource "jamfplatform_pro_smtp_server" "singleton" {
+  enabled = true
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	singletons := filepath.Join(dir, "singletons_import.tf")
+	if err := os.WriteFile(singletons, []byte(`import {
+  to       = jamfplatform_pro_smtp_server.singleton
+  identity = { id = "singleton" }
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "jamf_connect_import.tf")
+
+	if err := mergeImportFiles(generated, []string{singletons, missing}); err != nil {
+		t.Fatalf("mergeImportFiles: %v", err)
+	}
+
+	if err := postprocess.Process(dir, generated, registry.New(), &postprocess.ProcessOptions{
+		TypeToFileMap: TypeToFileMap(),
+		Rules:         DefaultRules(),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	out, err := os.ReadFile(filepath.Join(dir, "pro_smtp_server_import.tf"))
+	if err != nil {
+		t.Fatalf("singleton import block was not split into its per-type file: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "jamfplatform_pro_smtp_server.singleton") ||
+		!strings.Contains(got, `id = "singleton"`) {
+		t.Errorf("import block did not survive the merge:\n%s", got)
 	}
 }
