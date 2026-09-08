@@ -193,8 +193,16 @@ func cleanupEmptyDirs(root string) {
 }
 
 // splitPartialEnvResources separates resources that exist in only some
-// environments into clearly-labeled files like policies_staging_only.tf.
-func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeToFileMap map[string]string) error {
+// environments into clearly-labeled files like policies_staging_only.tf, and
+// reports how many it actually moved.
+//
+// The count matters because it is routinely smaller than the number of partial
+// resources. The module is assembled from the source environment's generated
+// configuration alone, so a resource present only OUTSIDE the source
+// environment was never in the module and there is nothing here to relabel. It
+// is absent from the deliverable, which is what naming a source of truth means
+// — but the caller has to say so rather than report it as separated.
+func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeToFileMap map[string]string) (int, error) {
 	// Build map of partial-env resources: "type.label" → sorted env list
 	partial := make(map[string][]string)
 	for _, m := range matches {
@@ -208,8 +216,9 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 		partial[addr] = envs
 	}
 	if len(partial) == 0 {
-		return nil
+		return 0, nil
 	}
+	moved := 0
 
 	// Build reverse map: output filename → resource type
 	typeToFile := make(map[string]string, len(typeToFileMap))
@@ -260,6 +269,7 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 			}
 			targets[suffix].blocks = append(targets[suffix].blocks, block)
 			blocksToRemove = append(blocksToRemove, block)
+			moved++
 		}
 
 		if len(blocksToRemove) == 0 {
@@ -271,7 +281,7 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 			f.Body().RemoveBlock(block)
 		}
 		if err := os.WriteFile(file, f.Bytes(), 0644); err != nil {
-			return fmt.Errorf("writing %s: %w", base, err)
+			return moved, fmt.Errorf("writing %s: %w", base, err)
 		}
 
 		// Write partial blocks to _<envs>_only.tf files
@@ -296,12 +306,12 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 				}
 			}
 			if err := os.WriteFile(outFile, newF.Bytes(), 0644); err != nil {
-				return fmt.Errorf("writing %s: %w", filepath.Base(outFile), err)
+				return moved, fmt.Errorf("writing %s: %w", filepath.Base(outFile), err)
 			}
 		}
 	}
 
-	return nil
+	return moved, nil
 }
 
 // appendBlockToBody copies a block from one file to another body via serialization.

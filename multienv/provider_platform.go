@@ -165,6 +165,11 @@ func platformScopeProviderLine(env EnvConfig) string {
 	return ""
 }
 
+// UsesIdentityImports reports true: the Jamf Platform provider advertises an
+// IdentitySchema on every construct, `terraform query -generate-config-out`
+// emits the identity form, and so does WriteSingletonImports.
+func (platformProvider) UsesIdentityImports() bool { return true }
+
 func (platformProvider) EnvAuthVariables(env EnvConfig) string {
 	base := fmt.Sprintf(`variable "jamfplatform_base_url" {
   description = "Jamf Platform API gateway host (e.g. https://us.api.jamfcloud.com, or eu. / apac.)"

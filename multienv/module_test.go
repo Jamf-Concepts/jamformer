@@ -275,7 +275,7 @@ resource "jamfpro_policy" "prod_only" {
 	}
 	typeToFileMap := map[string]string{"jamfpro_policy": "policies.tf"}
 
-	if err := splitPartialEnvResources(moduleDir, matches, typeToFileMap); err != nil {
+	if _, err := splitPartialEnvResources(moduleDir, matches, typeToFileMap); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,7 +336,7 @@ func TestSplitPartialEnvResources_NoPartials(t *testing.T) {
 		{ResourceType: "jamfpro_policy", Label: "shared", AllEnvs: true},
 	}
 
-	if err := splitPartialEnvResources(moduleDir, matches, map[string]string{}); err != nil {
+	if _, err := splitPartialEnvResources(moduleDir, matches, map[string]string{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -571,5 +571,65 @@ resource "jamfplatform_pro_account" "a" {
 	}
 	if got["known_diff"] {
 		t.Error("known diff var should not be re-collected")
+	}
+}
+
+// TestSplitPartialEnvResourcesReportsWhatItMoved pins the count the caller uses
+// to tell the operator what happened.
+//
+// The module is assembled from the source environment's configuration alone, so
+// a resource present only in another environment was never in it and there is
+// nothing here to relabel. Reporting the partial count as though all of it had
+// been separated hid exactly that case: resources absent from the deliverable,
+// announced as though they had been handled.
+func TestSplitPartialEnvResourcesReportsWhatItMoved(t *testing.T) {
+	dir := t.TempDir()
+	// The module holds one of the two partial resources — the one the source
+	// environment had. The other exists only in prod, so it never got here.
+	if err := os.WriteFile(filepath.Join(dir, "pro_building.tf"), []byte(`resource "jamfplatform_pro_building" "dev_only" {
+  name = "Dev Only"
+}
+
+resource "jamfplatform_pro_building" "everywhere" {
+  name = "Everywhere"
+}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	matches := []MatchedResource{
+		{ResourceType: "jamfplatform_pro_building", Label: "everywhere", Present: []string{"dev", "prod"}, AllEnvs: true},
+		{ResourceType: "jamfplatform_pro_building", Label: "dev_only", Present: []string{"dev"}},
+		{ResourceType: "jamfplatform_pro_building", Label: "prod_only", Present: []string{"prod"}},
+	}
+
+	moved, err := splitPartialEnvResources(dir, matches, map[string]string{
+		"jamfplatform_pro_building": "pro_building.tf",
+	})
+	if err != nil {
+		t.Fatalf("splitPartialEnvResources: %v", err)
+	}
+	// Two partial resources, but only one was in the module to move.
+	if moved != 1 {
+		t.Errorf("moved = %d, want 1 — the prod-only resource was never in the module", moved)
+	}
+
+	only, err := os.ReadFile(filepath.Join(dir, "pro_building_dev_only.tf"))
+	if err != nil {
+		t.Fatalf("reading the dev-only file: %v", err)
+	}
+	if !strings.Contains(string(only), `"dev_only"`) {
+		t.Errorf("dev-only file does not hold the resource:\n%s", only)
+	}
+
+	shared, err := os.ReadFile(filepath.Join(dir, "pro_building.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(shared), `"dev_only"`) {
+		t.Errorf("the partial resource should have left the shared file:\n%s", shared)
+	}
+	if !strings.Contains(string(shared), `"everywhere"`) {
+		t.Errorf("the all-envs resource should have stayed:\n%s", shared)
 	}
 }

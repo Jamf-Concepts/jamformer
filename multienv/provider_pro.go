@@ -244,6 +244,11 @@ provider "jamfpro" {
 `, versionLine, providerAttrs)
 }
 
+// UsesIdentityImports reports false: the community jamfpro provider is driven
+// through `terraform plan -generate-config-out`, whose import blocks carry a
+// flat id.
+func (proProvider) UsesIdentityImports() bool { return false }
+
 func (proProvider) EnvAuthVariables(env EnvConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "variable \"jamfpro_instance_url\" {\n")
