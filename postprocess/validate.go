@@ -67,6 +67,15 @@ var (
 	// field). The capture may be a dotted path (e.g. institutional_recovery_key.data).
 	mustSetConfigRe = regexp.MustCompile(`Must set a configuration value for the ([\w.]+)`)
 
+	// crossFieldRequiresRe matches a cross-field validator that says one
+	// attribute is required because a sibling holds a particular value, naming
+	// the missing attribute in backticks: "`authentication_type` is \"HEADER\",
+	// which requires `header`." The attribute is missing from the generated
+	// config because the provider's read cannot return it — a webhook auth
+	// header is a secret Jamf Pro never echoes — so the repair is the same as an
+	// explicit-null Required attribute: wire it to a variable the user supplies.
+	crossFieldRequiresRe = regexp.MustCompile("(?i)which requires [`'\"]([a-z0-9_.]+)[`'\"]")
+
 	// attrLineRe splits an `  attr = value  # comment` line into its assignment
 	// prefix, value, and optional trailing comment.
 	attrLineRe = regexp.MustCompile(`^(\s*[\w.]+\s*=\s*)(.*?)(\s*#.*)?$`)
@@ -278,6 +287,29 @@ func applyFixPass(outputDir string, diags []tfjson.Diagnostic, schema *ProviderS
 					requiredVars = append(requiredVars, rv)
 					edits = append(edits, FixEdit{resType + "." + resLabel, attr, "replaced with var." + varName, diag.Summary})
 				}
+			}
+			continue
+		}
+
+		// A cross-field validator naming an attribute the config does not carry:
+		// the provider generated a block its own ValidateConfig rejects, because
+		// the sibling it keys on ("authentication_type = HEADER") demands a value
+		// its read cannot return. The attribute is absent rather than null, so it
+		// goes through the required-null path, which adds it. WriteOnly attributes
+		// are left to injectRequiredWriteOnly.
+		if m := crossFieldRequiresRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
+			attr := m[1]
+			src, _ := os.ReadFile(filePath)
+			resType, _ := resourceAtLine(src, diag.Range.Start.Line)
+			if resType != "" && !isWoVersionAttr(attr) &&
+				!schema.isWriteOnly(resType, attrBlockPath(attr), leafAttrName(attr)) {
+				requiredNulls = append(requiredNulls, requiredNullDiag{
+					attrPath: attr,
+					filePath: filePath,
+					filename: diag.Range.Filename,
+					line:     diag.Range.Start.Line,
+					summary:  diag.Summary,
+				})
 			}
 			continue
 		}

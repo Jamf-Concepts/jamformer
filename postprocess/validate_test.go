@@ -5,6 +5,7 @@ package postprocess
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1142,5 +1143,88 @@ resource "jamfpro_activation_code" "settings" {
 	result.Fixed += len(edits)
 	if len(result.Edits) != result.Fixed {
 		t.Errorf("len(Edits) = %d, Fixed = %d", len(result.Edits), result.Fixed)
+	}
+}
+
+// A cross-field validator can name an attribute the generated config does not
+// carry at all: the webhook `header` is a secret Jamf Pro never echoes, so
+// -generate-config-out omits it and the provider's own ValidateConfig then
+// refuses the block it produced. The attribute is absent rather than null, so
+// the repair has to add it, wired to a variable the user supplies.
+func TestCrossFieldRequiredAttributeBecomesVariable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pro_webhook.tf")
+	src := `resource "jamfplatform_pro_webhook" "enroll" {
+  authentication_type = "HEADER"
+  event               = "MobileDeviceEnrolled"
+  name                = "Enrollment"
+  url                 = "https://hooks.example/enroll"
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfplatform_pro_webhook": {
+			"": {"header": {Optional: true, Sensitive: true, Type: cty.String}},
+		},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{{
+		Severity: "error",
+		Summary:  "header required for HEADER authentication",
+		Detail:   "`authentication_type` is \"HEADER\", which requires `header`. Set `header` to a JSON object of header name/value pairs, or change `authentication_type`.",
+		Range:    &tfjson.Range{Filename: "pro_webhook.tf", Start: tfjson.Pos{Line: 1}},
+	}}, schema)
+
+	if len(vars) != 1 {
+		t.Fatalf("expected one required variable, got %+v", vars)
+	}
+	if vars[0].AttrPath != "header" {
+		t.Errorf("variable should describe the header attribute, got %q", vars[0].AttrPath)
+	}
+	if len(edits) != 1 {
+		t.Fatalf("expected one edit, got %+v", edits)
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "var."+vars[0].VarName) ||
+		!regexp.MustCompile(`header\s*=\s*var\.`).MatchString(string(out)) {
+		t.Errorf("header was not added as a variable reference:\n%s", out)
+	}
+	if !strings.Contains(string(out), `authentication_type = "HEADER"`) {
+		t.Errorf("sibling attribute was damaged:\n%s", out)
+	}
+}
+
+// The same diagnostic shape must not fire for a WriteOnly attribute:
+// injectRequiredWriteOnly owns those, pairing the secret with its _wo_version.
+func TestCrossFieldRequiredSkipsWriteOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pro_webhook.tf")
+	src := `resource "jamfplatform_pro_webhook" "signed" {
+  authentication_type = "HASH_SIGNATURE"
+  name                = "Signed"
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := &ProviderSchema{attrs: map[string]map[string]map[string]attrInfo{
+		"jamfplatform_pro_webhook": {
+			"": {"password": {Optional: true, Sensitive: true, WriteOnly: true, Type: cty.String}},
+		},
+	}}
+
+	vars, edits := applyFixPass(dir, []tfjson.Diagnostic{{
+		Severity: "error",
+		Summary:  "password required for HASH_SIGNATURE authentication",
+		Detail:   "`authentication_type` is \"HASH_SIGNATURE\", which requires `password`.",
+		Range:    &tfjson.Range{Filename: "pro_webhook.tf", Start: tfjson.Pos{Line: 1}},
+	}}, schema)
+
+	if len(vars) != 0 || len(edits) != 0 {
+		t.Fatalf("a WriteOnly attribute must be left to injectRequiredWriteOnly, got vars=%+v edits=%+v", vars, edits)
 	}
 }
