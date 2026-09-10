@@ -30,3 +30,6 @@ Thumbs.db
 
 # OSS pre-release checklist (local only — do not commit)
 jamf-oss-developer-checklist-*.md
+
+# Working documents (local only — do not commit)
+WORKING_*.md

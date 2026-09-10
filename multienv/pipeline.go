@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/Jamf-Concepts/jamformer/importgen"
 	"github.com/Jamf-Concepts/jamformer/postprocess"
@@ -179,11 +181,30 @@ func RunPipeline(opts *Options) error {
 		return fmt.Errorf("generating module providers: %w", err)
 	}
 
-	// 6b. Split partial-env resources into labeled files
+	// 6b. Split partial-env resources into labeled files.
+	//
+	// Only the ones the source environment holds can be relabelled: the module is
+	// assembled from that environment's configuration, so a resource present
+	// only elsewhere was never in it. That is what naming a source of truth
+	// means, but it has to be said out loud — reporting the partial count as
+	// though all of it had been separated hid resources that are simply absent
+	// from the deliverable.
 	if partialCount > 0 {
-		logStep("  Separating %d environment-specific resources...", partialCount)
-		if err := splitPartialEnvResources(moduleDir, matches, prov.TypeToFileMap()); err != nil {
+		moved, err := splitPartialEnvResources(moduleDir, matches, prov.TypeToFileMap())
+		if err != nil {
 			return fmt.Errorf("splitting partial-env resources: %w", err)
+		}
+		if moved > 0 {
+			logStep("  Separated %d environment-specific resource(s) into *_only.tf files", moved)
+		}
+		if absent := partialCount - moved; absent > 0 {
+			logStep("  ⚠ %d resource(s) exist only outside the source environment %q and are NOT in the module:", absent, sourceEnv)
+			for _, m := range matches {
+				if m.AllEnvs || slices.Contains(m.Present, sourceEnv) {
+					continue
+				}
+				logStep("      %s.%s (in %s)", m.ResourceType, m.Label, strings.Join(m.Present, ", "))
+			}
 		}
 	}
 
@@ -226,7 +247,11 @@ func RunPipeline(opts *Options) error {
 	for _, v := range fileVars {
 		knownVars[v.Name] = true
 	}
-	if writeOnlyVars := scanWriteOnlyVarRefs(moduleDir, knownVars); len(writeOnlyVars) > 0 {
+	// The source-env variables.tf is still in the output root at this point
+	// (cleanupOutputRoot removes it later), so each recovered variable can be
+	// re-declared as post-processing declared it rather than guessed at.
+	declaredVars := readDeclaredVars(filepath.Join(opts.OutputDir, "variables.tf"))
+	if writeOnlyVars := scanWriteOnlyVarRefs(moduleDir, knownVars, declaredVars); len(writeOnlyVars) > 0 {
 		logStep("  %d write-only secret(s) wired to environment variables", len(writeOnlyVars))
 		fileVars = append(fileVars, writeOnlyVars...)
 	}

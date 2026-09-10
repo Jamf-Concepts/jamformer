@@ -65,7 +65,36 @@ type ReferenceRule struct {
 	// entity_id targets a policy, profile, or app per self_service_entity_type).
 	DiscriminatorAttr string
 
-	// DiscriminatorMap maps a DiscriminatorAttr value to the TF resource type to
-	// resolve the element's ID against. An unmapped value leaves the ID untouched.
-	DiscriminatorMap map[string]string
+	// DiscriminatorMap maps a DiscriminatorAttr value to the TF resource types to
+	// resolve the element's ID against, tried in order. An unmapped value, or one
+	// no listed type claims, leaves the ID untouched. More than one type is what
+	// a wire field written in two forms needs: a user-group "member of" criterion
+	// carries the target group's numeric ID on some Jamf Pro versions and its
+	// name on others, so both the ID- and name-keyed registry types are listed.
+	//
+	// With PrefixedIDs the keys are literal value prefixes instead of sibling
+	// field values, and the longest matching prefix wins.
+	DiscriminatorMap map[string][]string
+
+	// AllowUnresolved says a value no registry entry claims is expected here, so
+	// it is left exactly as it was with no TODO marker. Use it where the field
+	// legitimately accepts IDs from outside the export — a Jamf Security Cloud
+	// gateway reference takes either the tenant's own gateway or one of Jamf's
+	// shared gateways, and the shared ones are a Jamf-maintained catalogue with
+	// no resource to point at. Marking those TODO sends the reader looking for a
+	// broken reference that was never broken.
+	AllowUnresolved bool
+
+	// PrefixedIDs indicates the value is an ID carried behind a literal prefix
+	// that also selects the target type, e.g. UEM Connect's uem_group_id, which
+	// is written "computer_12" or "mobile_7" for a Jamf Pro device group.
+	// DiscriminatorMap maps each prefix to the resource type its tail resolves
+	// against; the prefix is preserved and the tail becomes a ${...} reference,
+	// so "computer_12" becomes "computer_${jamfplatform_device_group.x.jamf_pro_id}".
+	//
+	// Used with ElementAttr (per list element) or on its own (a single
+	// attribute). An unmatched prefix, or a tail that resolves to nothing,
+	// leaves the value untouched: unlike a bare ID reference, a prefixed value
+	// is still valid on its own and is not evidence of a broken export.
+	PrefixedIDs bool
 }

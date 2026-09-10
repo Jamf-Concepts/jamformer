@@ -5,6 +5,7 @@ package multienv
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tfjson "github.com/hashicorp/terraform-json"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/Jamf-Concepts/jamformer/terraform"
 )
 
-// platformProvider implements Provider for the Jamf-Concepts/jamfplatform
+// platformProvider implements Provider for the jamf/jamfplatform
 // provider (OAuth2 only; tenant-scoped).
 type platformProvider struct{}
 
@@ -34,7 +35,7 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 		BaseURL:              env.URL,
 		ClientID:             env.ClientID,
 		ClientSecret:         env.ClientSecret,
-		TenantID:             env.TenantID,
+		Scope:                env.PlatformScope(),
 		SelectedResources:    opts.SelectedResources,
 		SkipReferences:       false, // references must be resolved for diffing
 		SkipPackageDownloads: opts.SkipPackageDownloads,
@@ -48,7 +49,21 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 		return nil, err
 	}
 
+	writePlatformPermissions(env, opts)
+
 	schemas, _ := ir.ProviderSchemas.(*tfjson.ProviderSchemas)
+
+	// Drop the non-creatable blueprint drafts before the auto-fix runs. The
+	// single-env pipeline does this inside postprocess.Process, which the
+	// multi-env path only reaches after the fix, and the fix would read a
+	// draft's empty device_groups as a Required empty collection and turn it
+	// into a variable — hiding the emptiness the skip keys on and carrying an
+	// unplannable draft into the module. See postprocess.StripBlueprintDrafts.
+	if n, err := postprocess.StripBlueprintDrafts(filepath.Join(tempDir, "generated.tf")); err != nil && !Quiet {
+		fmt.Printf("  Warning: could not strip blueprint drafts for %s: %v\n", env.Name, err)
+	} else if n > 0 && opts.Verbose && !Quiet {
+		fmt.Printf("  Dropped %d non-creatable blueprint draft(s) for %s\n", n, env.Name)
+	}
 
 	// Apply the validation auto-fix in place (temp dir still init'd) so the merged
 	// module and env roots inherit a plannable config. injectRequiredWriteOnly has
@@ -73,6 +88,40 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 	}, nil
 }
 
+// writePlatformPermissions writes PERMISSIONS.md into the assembled output
+// directory, which the single-env pipeline does in its own tail — a step the
+// multi-env path skips, because it enters through RunDiscoveryAndGenerate
+// rather than platform.RunPipeline. README lists the file as export output, so
+// leaving it out made multi-env quietly produce a project without it.
+//
+// Only the source environment writes it. Every environment shares one
+// selection, so the capability set differs between them only when their scopes
+// differ, and the file describes the environment the module was generated from.
+// The per-env temp dir would be the wrong destination: it is deleted when the
+// merge finishes.
+//
+// Best-effort, like the single-env call: a missing permissions summary must not
+// fail an otherwise complete export.
+func writePlatformPermissions(env EnvConfig, opts *Options) {
+	sourceEnv := opts.SourceEnv
+	if sourceEnv == "" {
+		sourceEnv = opts.Envs[0].Name
+	}
+	if env.Name != sourceEnv {
+		return
+	}
+	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
+		if !Quiet {
+			fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+		}
+		return
+	}
+	if err := platform.WritePermissionsFile(opts.OutputDir, env.PlatformScope(),
+		opts.SelectedResources, !opts.SkipPackageDownloads); err != nil && !Quiet {
+		fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+	}
+}
+
 // platformResourceRefs maps platform's discovered resources into the
 // provider-agnostic ResourceRef slice.
 func platformResourceRefs(discovered []platform.DiscoveredResource) []ResourceRef {
@@ -92,7 +141,7 @@ func (platformProvider) ModuleProvidersBlock(versionLine string) string {
 	return fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }
@@ -103,7 +152,7 @@ func (platformProvider) EnvProviderHeader(env EnvConfig, versionLine string, _ i
 	return fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }
@@ -111,15 +160,32 @@ func (platformProvider) EnvProviderHeader(env EnvConfig, versionLine string, _ i
 provider "jamfplatform" {
   base_url      = var.jamfplatform_base_url
   client_id     = var.jamfplatform_client_id
-  client_secret = var.jamfplatform_client_secret
-  tenant_id     = var.jamfplatform_tenant_id
+  client_secret = var.jamfplatform_client_secret%s
 }
-`, versionLine)
+`, versionLine, platformScopeProviderLine(env))
 }
 
+// platformScopeProviderLine returns the provider-block scope attribute for an
+// environment. Organization scope contributes nothing: setting neither
+// attribute is what selects it, and an empty string would be rejected.
+func platformScopeProviderLine(env EnvConfig) string {
+	switch {
+	case env.EnvironmentID != "":
+		return "\n  environment_id = var.jamfplatform_environment_id"
+	case env.TenantID != "":
+		return "\n  tenant_id     = var.jamfplatform_tenant_id"
+	}
+	return ""
+}
+
+// UsesIdentityImports reports true: the Jamf Platform provider advertises an
+// IdentitySchema on every construct, `terraform query -generate-config-out`
+// emits the identity form, and so does WriteSingletonImports.
+func (platformProvider) UsesIdentityImports() bool { return true }
+
 func (platformProvider) EnvAuthVariables(env EnvConfig) string {
-	return fmt.Sprintf(`variable "jamfplatform_base_url" {
-  description = "Jamf Platform API gateway base URL (e.g. https://us.apigw.jamf.com)"
+	base := fmt.Sprintf(`variable "jamfplatform_base_url" {
+  description = "Jamf Platform API gateway host (e.g. https://us.api.jamfcloud.com, or eu. / apac.)"
   type        = string
   default     = %q
 }
@@ -136,11 +202,26 @@ variable "jamfplatform_client_secret" {
   sensitive   = true
 }
 
-variable "jamfplatform_tenant_id" {
-  description = "Jamf Platform tenant ID"
+`, env.URL)
+
+	switch {
+	case env.EnvironmentID != "":
+		return base + fmt.Sprintf(`variable "jamfplatform_environment_id" {
+  description = "Jamf Platform environment ID for the %s environment"
   type        = string
   default     = %q
 }
 
-`, env.URL, env.TenantID)
+`, env.Name, env.EnvironmentID)
+	case env.TenantID != "":
+		return base + fmt.Sprintf(`variable "jamfplatform_tenant_id" {
+  description = "Jamf Platform tenant ID for the %s environment (legacy scope)"
+  type        = string
+  default     = %q
+}
+
+`, env.Name, env.TenantID)
+	}
+	// Organization scope: no identifier variable.
+	return base
 }

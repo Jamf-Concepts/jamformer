@@ -31,11 +31,17 @@ const (
 	// device-group criterion field) to its EA resource address.
 	ComputerEANameType = tComputerEA + "#name"
 	MobileEANameType   = tMobileEA + "#name"
+
+	// UserGroupNameType resolves a user-group name to its resource address. A
+	// user-group "User Group" member-of criterion carries the target group as
+	// either its numeric ID or its name, depending on the tenant's Jamf Pro
+	// version, so the rule tries the id-keyed type and this one in turn.
+	UserGroupNameType = tUserGroup + "#name"
 )
 
 // PopulateCriteriaNameIndexes registers name→address entries used by the
-// name-based criteria reference rules: device-group names per device_type and
-// computer/mobile extension-attribute names. Addresses come straight from the
+// name-based criteria reference rules: device-group names per device_type,
+// computer/mobile extension-attribute names, and user-group names. Addresses come straight from the
 // resource block labels in the generated HCL.
 func PopulateCriteriaNameIndexes(generatedFile string, reg *registry.Registry) error {
 	f, err := parseGeneratedHCL(generatedFile)
@@ -50,11 +56,12 @@ func PopulateCriteriaNameIndexes(generatedFile string, reg *registry.Registry) e
 		if len(labels) < 2 {
 			continue
 		}
-		// Only device groups and extension attributes are name-indexed; reading a
-		// top-level "name" before this check would panic on types that carry their
-		// name nested (e.g. jamfplatform_pro_policy → general.name).
+		// Only device groups, extension attributes and user groups are
+		// name-indexed; reading a top-level "name" before this check would panic on
+		// types that carry their name nested (e.g. jamfplatform_pro_policy →
+		// general.name).
 		switch labels[0] {
-		case "jamfplatform_device_group", tComputerEA, tMobileEA:
+		case "jamfplatform_device_group", tComputerEA, tMobileEA, tUserGroup:
 		default:
 			continue
 		}
@@ -75,6 +82,8 @@ func PopulateCriteriaNameIndexes(generatedFile string, reg *registry.Registry) e
 			reg.Register(ComputerEANameType, name, addr)
 		case tMobileEA:
 			reg.Register(MobileEANameType, name, addr)
+		case tUserGroup:
+			reg.Register(UserGroupNameType, name, addr)
 		}
 	}
 	return nil

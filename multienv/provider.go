@@ -52,6 +52,20 @@ type Provider interface {
 	// EnvAuthVariables returns the connection variable declarations for an
 	// environment root's variables.tf (URL/auth/credentials).
 	EnvAuthVariables(env EnvConfig) string
+
+	// UsesIdentityImports reports whether this provider's import blocks address
+	// an object by resource identity (`identity = { id = ... }`) rather than by
+	// the flat `id = ...`.
+	//
+	// It decides the form the environment roots write, so that they match the
+	// single-env export rather than diverging from it. It matters most for the
+	// settings singletons, whose import id is the fixed sentinel "singleton":
+	// on the flat form a singleton the tenant has not configured reports a
+	// framework-level "Missing Resource Identity After Read", which tells the
+	// operator to file a provider bug for what is really just an absent
+	// setting. The identity form leaves state null, which the provider's Read
+	// recognises, and it reports plainly that there is nothing to import.
+	UsesIdentityImports() bool
 }
 
 // applyValidationFixes runs the provider's validation auto-fix against a

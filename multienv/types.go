@@ -9,6 +9,7 @@
 package multienv
 
 import (
+	"github.com/Jamf-Concepts/jamformer/platform"
 	"github.com/Jamf-Concepts/jamformer/postprocess"
 	"github.com/Jamf-Concepts/jamformer/registry"
 )
@@ -22,7 +23,22 @@ type EnvConfig struct {
 	Password     string
 	ClientID     string
 	ClientSecret string
-	TenantID     string // Jamf Platform tenant ID (optional; pro/Platform only)
+	// EnvironmentID and TenantID are the two Jamf Platform scope identifiers,
+	// mutually exclusive. Both empty is organization scope. Ignored by the
+	// jamfpro provider, which has no notion of either.
+	EnvironmentID string
+	TenantID      string
+}
+
+// PlatformScope resolves this environment's Jamf Platform scope.
+func (e EnvConfig) PlatformScope() platform.Scope {
+	switch {
+	case e.EnvironmentID != "":
+		return platform.Scope{Kind: platform.ScopeEnvironment, ID: e.EnvironmentID}
+	case e.TenantID != "":
+		return platform.Scope{Kind: platform.ScopeTenant, ID: e.TenantID}
+	}
+	return platform.Scope{Kind: platform.ScopeOrganization}
 }
 
 // Options holds all parameters for multi-environment export.
@@ -118,4 +134,17 @@ type ModuleVar struct {
 	AttrName     string // e.g. "script_contents"
 	FilePath     string // relative path to the divergent file, e.g. "scripts/install_agent.sh"
 	Sensitive    bool   // mark the declared variable sensitive (write-only secrets)
+	Type         string // declared HCL type; empty means "string"
+}
+
+// VarType returns the type to declare for v, defaulting to string. A recovered
+// variable carries the type the source environment declared for it, which is
+// not always a string: the validation auto-fix answers a Required empty
+// collection with a set(string), and declaring that one as a string produces a
+// module terraform refuses to even validate.
+func (v ModuleVar) VarType() string {
+	if v.Type == "" {
+		return "string"
+	}
+	return v.Type
 }

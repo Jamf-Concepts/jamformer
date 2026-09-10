@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,11 +21,15 @@ import (
 
 // PipelineOptions holds all parameters needed to run the Jamf Platform pipeline.
 type PipelineOptions struct {
-	OutputDir            string
-	BaseURL              string
-	ClientID             string
-	ClientSecret         string
-	TenantID             string // optional; passed to provider as JAMFPLATFORM_TENANT_ID
+	OutputDir    string
+	BaseURL      string
+	ClientID     string
+	ClientSecret string
+	// Scope is the API integration's scope. It decides which construct
+	// families are reachable, which header the provider sends, and whether the
+	// federated Jamf Pro surface (packages, Jamf Connect, branding images) can
+	// be reached at all.
+	Scope                Scope
 	SelectedResources    map[string]bool
 	SkipReferences       bool
 	SkipPackageDownloads bool
@@ -43,7 +49,6 @@ type IntermediateResult struct {
 	OutputDir       string               // working directory
 	PackageFiles    map[string]string    // JCDS file_name → relative path
 	Resources       []DiscoveredResource // flat (type, label, name, id) list for multi-env matching
-	ImportFiles     []string             // extra import files (singletons, jamf_connect) left in place
 	PlatformCreds   *importgen.PlatformCredentials
 	ProviderSchemas any // *tfjson.ProviderSchemas (kept as interface to avoid import in callers)
 }
@@ -108,11 +113,66 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
 		}
 		for _, v := range fixResult.RequiredVars {
-			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
+			kind := "sensitive, value required"
+			if v.NotSensitive {
+				kind = "value required"
+			}
+			logStep("  ⚠ %s: replaced null with var.%s (%s)", v.Resource, v.VarName, kind)
 		}
 	}
 
+	// 9. Record the permissions this export required, so the next person to run
+	// it — or to apply it from CI — can create an integration with the right
+	// permission set instead of over-granting until an unattributed 403 stops.
+	if err := WritePermissionsFile(opts.OutputDir, opts.Scope, opts.SelectedResources, !opts.SkipPackageDownloads); err != nil && !opts.Quiet {
+		fmt.Printf("  Warning: could not write PERMISSIONS.md: %v\n", err)
+	}
+
 	return fixResult, nil
+}
+
+// mergeImportFiles appends the import blocks held in each of paths to the
+// generated file and deletes the file it took them from, so the post-processing
+// splitter routes them into the same per-type *_import.tf files as the ones
+// `terraform query` wrote and nothing downstream reads a block twice. A path
+// that does not exist is skipped: neither set of imports is written on every
+// run.
+func mergeImportFiles(generatedFile string, paths []string) error {
+	var merged []byte
+	var consumed []string
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if len(bytes.TrimSpace(src)) == 0 {
+			continue
+		}
+		merged = append(merged, '\n')
+		merged = append(merged, bytes.TrimRight(src, "\n")...)
+		merged = append(merged, '\n')
+		consumed = append(consumed, path)
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(generatedFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(merged); err != nil {
+		return err
+	}
+	// Delete what was folded in, so nothing downstream reads the same import
+	// block twice — the step-8 cleanup would only get to them later.
+	for _, path := range consumed {
+		_ = os.Remove(path)
+	}
+	return nil
 }
 
 // CleanupIntermediateFiles removes the working files produced during discovery
@@ -126,10 +186,11 @@ func CleanupIntermediateFiles(outputDir string) {
 // RunDiscoveryAndGenerate executes steps 1–6 of the Jamf Platform pipeline
 // (generate config → init → query → jamf_connect/singleton/icon/branding
 // synthesis → package download → schema load) and returns the intermediate
-// results without post-processing. The generated.tf and import files are left
-// in place so callers can both post-process and enumerate the discovered
-// resources. Used by both the single-env RunPipeline and the multi-env merge
-// pipeline.
+// results without post-processing. generated.tf is left in place — carrying
+// every import block, including the singleton and Jamf Connect ones folded in
+// from their own files — so callers can both post-process it and enumerate the
+// discovered resources. Used by both the single-env RunPipeline and the
+// multi-env merge pipeline.
 func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error) {
 	// Set quiet/verbose flags for sub-packages
 	Quiet = opts.Quiet
@@ -149,6 +210,22 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		}
 	}
 
+	// Narrow the selection to what the configured scope can actually reach.
+	// A list block for an out-of-scope resource is not a partial failure: the
+	// provider refuses it when it configures itself, which fails the whole
+	// query. Restricting the selection here means one filter governs the query
+	// file, the singleton imports and the progress denominator alike.
+	// Narrowing can legitimately empty the selection, and everything downstream
+	// then does nothing quietly: no query file is written, no singleton imports,
+	// and terraform query runs against an empty directory — after init has
+	// already pulled the provider. Fail here, where the requested types and the
+	// scope that cannot reach them are both still in hand.
+	requested := opts.SelectedResources
+	opts.SelectedResources = scopedSelection(opts.Scope.Kind, requested)
+	if len(opts.SelectedResources) == 0 {
+		return nil, unreachableSelectionError(opts.Scope.Kind, requested)
+	}
+
 	// 1. Generate provider config + query file
 	status("generating config", 0, 0)
 	logStep("Generating Terraform configuration for Jamf Platform...")
@@ -156,7 +233,8 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		BaseURL:         opts.BaseURL,
 		ClientID:        opts.ClientID,
 		ClientSecret:    opts.ClientSecret,
-		TenantID:        opts.TenantID,
+		EnvironmentID:   opts.Scope.EnvironmentID(),
+		TenantID:        opts.Scope.TenantID(),
 		ProviderVersion: opts.ProviderVersion,
 	}
 	if err := importgen.GeneratePlatform(opts.OutputDir, platformCreds); err != nil {
@@ -190,9 +268,18 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		"JAMFPLATFORM_CLIENT_ID":     opts.ClientID,
 		"JAMFPLATFORM_CLIENT_SECRET": opts.ClientSecret,
 	}
-	if opts.TenantID != "" {
-		platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.TenantID
-	}
+	// Both scope keys are always set, empty for the one not in use. The scope
+	// resolved for this run is the only scope it may use, and mergeProviderEnv
+	// backfills any key it is not given from the caller's own environment — so
+	// leaving a key out is not "unset", it is "whatever is in the shell". A
+	// stray JAMFPLATFORM_TENANT_ID (the multi-env path reads only _<ENV>-
+	// suffixed names, so an unsuffixed one is never consumed) would otherwise
+	// reach the provider, which sees no provider block during discovery and
+	// takes its scope entirely from the environment: an organization-scoped run
+	// would silently export a stray tenant's objects, and an environment-scoped
+	// one would abort with "Conflicting API Integration Scope".
+	platformEnv["JAMFPLATFORM_ENVIRONMENT_ID"] = opts.Scope.EnvironmentID()
+	platformEnv["JAMFPLATFORM_TENANT_ID"] = opts.Scope.TenantID()
 
 	// Drive a per-list-type discovery fraction: terraform query emits one
 	// "list_complete" event per list block, counted against the number of
@@ -204,7 +291,25 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	queryErr := terraform.QueryWithEvents(opts.OutputDir, generatedFile, eventsFile, platformEnv)
 	terraform.QueryProgressFunc = nil
 	if queryErr != nil {
-		return nil, fmt.Errorf("terraform query: %w", queryErr)
+		// A partial query still produced usable configuration; the resources
+		// its plan phase rejected are repaired during post-processing (and,
+		// for the App Installer case below, before it). Anything else is fatal.
+		var partial *terraform.PartialQueryError
+		if !errors.As(queryErr, &partial) {
+			return nil, fmt.Errorf("terraform query: %w", queryErr)
+		}
+		// Printed regardless of Quiet: this is terraform reporting that it
+		// refused part of the config the export just generated. Post-processing
+		// repairs the cases it knows about, but it has no strategy for every
+		// one, and a run that swallowed this would end with a success summary
+		// over an incomplete export.
+		fmt.Println("  Some resources did not plan as generated; repairing during post-processing")
+		// Under -verbose the child's stderr was already streamed live, so
+		// printing the captured copy here would show the same block twice. The
+		// invariant is that the diagnostics appear exactly once, in every mode.
+		if !opts.Verbose {
+			fmt.Println(partial.Diagnostics)
+		}
 	}
 
 	// terraform query never creates generatedFile when every selected list
@@ -217,6 +322,42 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		}
 	}
 
+	// 3a. Fill in App Installer titles the provider read back as null.
+	//
+	// jamfplatform_pro_app_installer marks app_title_name Required but its list
+	// resource returns null for it, so the generated block cannot plan and the
+	// query above exits non-zero. This must run before the singleton plan,
+	// which would otherwise fail on the same blocks. Resolving the title
+	// against the App Installers catalogue needs the federated pro surface, so
+	// organization scope skips it — and reaches no App Installers either.
+	aiSelected := opts.SelectedResources == nil || opts.SelectedResources["app_installer"]
+	if aiSelected && opts.Scope.ReachesPro() {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
+		filled, guessed, unresolved, aiErr := HydrateAppInstallerTitles(terraform.Ctx, pc, generatedFile, eventsFile)
+		if aiErr != nil {
+			if !opts.Quiet {
+				fmt.Printf("  Warning: could not resolve App Installer titles: %v\n", aiErr)
+			}
+		} else {
+			if filled > 0 {
+				logStep("  Resolved %d App Installer title(s) from the App Installers catalogue", filled)
+			}
+			// A guess is the deployment's own name standing in for the catalogue
+			// title. It usually matches, but nothing verified it, so it is
+			// printed whatever the verbosity: the operator has to be able to
+			// check app_title_name against the catalogue before applying.
+			if guessed > 0 {
+				fmt.Printf("  ⚠ Guessed %d App Installer title(s) from the deployment name — verify app_title_name before applying\n", guessed)
+			}
+			// Unresolved blocks still carry a null app_title_name, which the
+			// provider marks Required, so they will not plan until a human
+			// fills them in.
+			if unresolved > 0 {
+				fmt.Printf("  ⚠ %d App Installer block(s) still have no app_title_name; set it manually before applying\n", unresolved)
+			}
+		}
+	}
+
 	// 3b. Discover Jamf Connect config-profile links via the federated pro SDK.
 	// jamfplatform_pro_jamf_connect has no list resource, so it is not
 	// query-discoverable; the SDK enumerates the linked profiles and we write
@@ -225,10 +366,10 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	wroteJamfConnect := false
 	jcSelected := opts.SelectedResources == nil || opts.SelectedResources["jamf_connect"]
 	if jcSelected {
-		if opts.TenantID == "" {
-			logStep("Skipping Jamf Connect discovery (set JAMF_TENANT_ID to enable — pro endpoints are tenant-scoped)")
+		if !opts.Scope.ReachesPro() {
+			logStep("Skipping Jamf Connect discovery (organization scope reaches only the Jamf Account family)")
 		} else {
-			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 			if n, jcErr := DiscoverJamfConnect(terraform.Ctx, pc, opts.OutputDir); jcErr != nil {
 				if !opts.Quiet {
 					fmt.Printf("  Warning: Jamf Connect discovery failed: %v\n", jcErr)
@@ -292,6 +433,29 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	// Write the user-facing provider.tf (with var.* refs), variables.tf, terraform.tfvars
 	if err := importgen.FinalizePlatform(opts.OutputDir, platformCreds); err != nil {
 		return nil, fmt.Errorf("finalizing provider config: %w", err)
+	}
+
+	importFiles := []string{
+		filepath.Join(opts.OutputDir, "singletons_import.tf"),
+		filepath.Join(opts.OutputDir, "jamf_connect_import.tf"),
+	}
+
+	// 4c. Fold the singleton and Jamf Connect import blocks into generated.tf.
+	// The list-resource imports are already there — `terraform query` writes them
+	// beside the config it generates — but these two sets live in their own files
+	// because they had to exist before the plan that materialised their config.
+	// Post-processing splits import blocks out of generated.tf alone and the
+	// step-8 cleanup deletes those files, so without this the export ships no
+	// import block for the settings singletons or the adopted Jamf Connect
+	// profiles, and a plan on it proposes to create settings that already exist.
+	//
+	// This has to happen before the label rename below: renaming rewrites the
+	// `to` address of every import block it can see, and a singleton whose label
+	// is composed from an attribute rather than left as "singleton" (the Security
+	// Cloud search domain, keyed on its domain_name) would otherwise keep an
+	// import block pointing at an address no resource carries.
+	if err := mergeImportFiles(generatedFile, importFiles); err != nil {
+		return nil, fmt.Errorf("merging import blocks: %w", err)
 	}
 
 	// 5. Rename auto-generated labels (all_0, all_1) to friendly names, folding
@@ -379,32 +543,17 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 
 	// 6d. Synthesise jamfplatform_pro_self_service_branding_image resources from
 	// the branding singletons' image-id references (no list resource). Downloads
-	// each image via the federated pro SDK; requires a tenant ID (pro endpoints
-	// are tenant-scoped). Registers each image so the singleton icon_id /
+	// each image via the federated pro SDK, which environment and tenant scope
+	// both reach. Registers each image so the singleton icon_id /
 	// banner_image_id references rewrite in post-processing.
-	if opts.TenantID != "" {
-		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+	if opts.Scope.ReachesPro() {
+		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 		if imgCount, imgErr := GenerateBrandingImages(terraform.Ctx, pc, generatedFile, opts.OutputDir, reg); imgErr != nil {
 			if !opts.Quiet {
 				fmt.Printf("  Warning: could not synthesise branding image resources: %v\n", imgErr)
 			}
 		} else if imgCount > 0 {
 			logStep("  Generated %d Self Service branding image resource(s)", imgCount)
-		}
-	}
-
-	// 6e. Drop api_role privileges not in the instance's assignable-privilege
-	// catalog (the provider validates against this same list and rejects unknown
-	// values). Tenant-scoped pro endpoint, so it requires a tenant ID.
-	apiRoleSelected := opts.SelectedResources == nil || opts.SelectedResources["api_role"]
-	if apiRoleSelected && opts.TenantID != "" {
-		pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
-		if n, prErr := FilterApiRolePrivileges(terraform.Ctx, pc, generatedFile); prErr != nil {
-			if !opts.Quiet {
-				fmt.Printf("  Warning: could not validate api_role privileges: %v\n", prErr)
-			}
-		} else if n > 0 {
-			logStep("  Dropped %d api_role privilege(s) not valid on this instance", n)
 		}
 	}
 
@@ -416,13 +565,13 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	packageFiles := make(map[string]string) // fileName → relative path
 	pkgSelected := opts.SelectedResources == nil || opts.SelectedResources["package"]
 	if !opts.SkipPackageDownloads && pkgSelected {
-		if opts.TenantID == "" {
-			logStep("Skipping package downloads (set JAMF_TENANT_ID to enable — JCDS is tenant-scoped)")
+		if !opts.Scope.ReachesPro() {
+			logStep("Skipping package downloads (organization scope reaches only the Jamf Account family)")
 		} else {
 			status("downloading packages", 0, 0)
 			logStep("Downloading package files...")
 			download.Quiet = opts.Quiet
-			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.TenantID)
+			pc := client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
 			files, dlErr := download.Packages(terraform.Ctx, pc, opts.OutputDir, func(current, total int) {
 				status("downloading packages", current, total)
 			})
@@ -448,14 +597,9 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	}
 
 	// Enumerate the discovered resources (type, label, name, id) for multi-env
-	// matching. Joins resource blocks in generated.tf with their import blocks
-	// (list imports live in generated.tf; singleton/jamf_connect imports live in
-	// their own files, still present at this point).
-	importFiles := []string{
-		filepath.Join(opts.OutputDir, "singletons_import.tf"),
-		filepath.Join(opts.OutputDir, "jamf_connect_import.tf"),
-	}
-	discovered, err := CollectResourceRefs(generatedFile, importFiles...)
+	// matching. Every import block now lives in generated.tf: step 4c folded the
+	// singleton and Jamf Connect files in and deleted them.
+	discovered, err := CollectResourceRefs(generatedFile)
 	if err != nil && !opts.Quiet {
 		fmt.Printf("  Warning: could not enumerate discovered resources: %v\n", err)
 	}
@@ -466,7 +610,6 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 		OutputDir:       opts.OutputDir,
 		PackageFiles:    packageFiles,
 		Resources:       discovered,
-		ImportFiles:     importFiles,
 		PlatformCreds:   platformCreds,
 		ProviderSchemas: schemas,
 	}, nil

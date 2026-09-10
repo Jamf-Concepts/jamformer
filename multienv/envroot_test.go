@@ -314,7 +314,7 @@ func TestGenerateEnvImports(t *testing.T) {
 		},
 	}
 
-	if err := generateEnvImports(envDir, matches, nil, "prod"); err != nil {
+	if err := generateEnvImports(envDir, matches, nil, "prod", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -354,7 +354,7 @@ func TestGenerateEnvImports_NoResources(t *testing.T) {
 	}
 
 	// "prod" has no resources
-	if err := generateEnvImports(envDir, matches, nil, "prod"); err != nil {
+	if err := generateEnvImports(envDir, matches, nil, "prod", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -430,5 +430,70 @@ func TestGenerateEnvRoot_Integration(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(envDir, f)); err != nil {
 			t.Errorf("missing %s", f)
 		}
+	}
+}
+
+// TestGenerateEnvImportsIdentityForm pins the import form an environment root
+// writes for a provider that addresses objects by resource identity.
+//
+// The single-env Jamf Platform export writes `identity = { id = ... }` for
+// every import, including the settings singletons, whose id is the fixed
+// sentinel "singleton". An environment root emitting the flat `id = ...`
+// instead diverges from it, and on that form a singleton the tenant has not
+// configured reports a framework-level "Missing Resource Identity After Read" —
+// telling the operator to file a provider bug for what is really an absent
+// setting.
+func TestGenerateEnvImportsIdentityForm(t *testing.T) {
+	matches := []MatchedResource{
+		{
+			ResourceType: "jamfplatform_pro_smtp_server",
+			Label:        "singleton",
+			IDs:          map[string]string{"prod": "singleton"},
+			Present:      []string{"prod"},
+		},
+		{
+			ResourceType: "jamfplatform_pro_building",
+			Label:        "hq",
+			IDs:          map[string]string{"prod": "12"},
+			Present:      []string{"prod"},
+		},
+	}
+
+	identityDir := t.TempDir()
+	if err := generateEnvImports(identityDir, matches, nil, "prod", true); err != nil {
+		t.Fatalf("generateEnvImports: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(identityDir, "imports.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(got)
+	for _, want := range []string{
+		`identity = { id = "singleton" }`,
+		`identity = { id = "12" }`,
+		"module.jamf.jamfplatform_pro_smtp_server.singleton",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `id = "singleton"`+"\n") {
+		t.Errorf("the flat form must not appear alongside the identity form:\n%s", out)
+	}
+
+	// The flat form is still what a provider without identity schemas gets.
+	flatDir := t.TempDir()
+	if err := generateEnvImports(flatDir, matches, nil, "prod", false); err != nil {
+		t.Fatalf("generateEnvImports (flat): %v", err)
+	}
+	flat, err := os.ReadFile(filepath.Join(flatDir, "imports.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(flat), "identity") {
+		t.Errorf("a flat-form provider must get no identity blocks:\n%s", flat)
+	}
+	if !strings.Contains(string(flat), `id = "12"`) {
+		t.Errorf("flat form lost the id:\n%s", flat)
 	}
 }

@@ -51,7 +51,7 @@ func ResolvedProviderVersion(workDir, providerSource string) string {
 const (
 	ProviderSourceJamfPro      = "deploymenttheory/jamfpro"
 	ProviderSourceJamfProtect  = "Jamf-Concepts/jamfprotect"
-	ProviderSourceJamfPlatform = "Jamf-Concepts/jamfplatform"
+	ProviderSourceJamfPlatform = "jamf/jamfplatform"
 	ProviderSourceJSC          = "Jamf-Concepts/jsctfprovider"
 )
 

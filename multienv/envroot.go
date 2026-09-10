@@ -36,7 +36,7 @@ func generateEnvRoot(outputDir string, prov Provider, env EnvConfig, matches []M
 	if err := generateEnvTfvars(envDir, env.Name, diffs); err != nil {
 		return fmt.Errorf("generating terraform.tfvars for %s: %w", env.Name, err)
 	}
-	if err := generateEnvImports(envDir, matches, moduleAddrs, env.Name); err != nil {
+	if err := generateEnvImports(envDir, matches, moduleAddrs, env.Name, prov.UsesIdentityImports()); err != nil {
 		return fmt.Errorf("generating imports.tf for %s: %w", env.Name, err)
 	}
 	if err := placeDivergentFiles(envDir, env.Name, outputDir, divergent); err != nil {
@@ -161,7 +161,7 @@ func generateEnvVariablesTF(envDir string, prov Provider, env EnvConfig, diffs [
 		}
 		fmt.Fprintf(&content, "variable %q {\n", v.Name)
 		fmt.Fprintf(&content, "  description = %q\n", v.Description)
-		fmt.Fprintf(&content, "  type        = string\n")
+		fmt.Fprintf(&content, "  type        = %s\n", v.VarType())
 		if v.Sensitive {
 			fmt.Fprintf(&content, "  sensitive   = true\n")
 		}
@@ -215,7 +215,7 @@ func generateEnvTfvars(envDir, envName string, diffs []AttrDiff) error {
 
 // generateEnvImports writes import blocks for all resources present in this
 // environment, with module.jamf. prefix on the to address.
-func generateEnvImports(envDir string, matches []MatchedResource, moduleAddrs map[string]bool, envName string) error {
+func generateEnvImports(envDir string, matches []MatchedResource, moduleAddrs map[string]bool, envName string, identityForm bool) error {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
@@ -240,8 +240,17 @@ func generateEnvImports(envDir string, matches []MatchedResource, moduleAddrs ma
 			{Type: hclsyntax.TokenIdent, Bytes: []byte(toAddr)},
 		})
 
-		// id = "<jamf_id>"
-		ib.SetAttributeRaw("id", ctyStringVal(id))
+		// The import id, in whichever form this provider addresses objects by.
+		// One raw token for the whole object expression: hclwrite spaces its own
+		// tokens, so assembling this from brace/ident/quote tokens would yield
+		// `{  id =  "singleton"  }`.
+		if identityForm {
+			ib.SetAttributeRaw("identity", hclwrite.Tokens{
+				{Type: hclsyntax.TokenIdent, Bytes: fmt.Appendf(nil, "{ id = %q }", id)},
+			})
+		} else {
+			ib.SetAttributeRaw("id", ctyStringVal(id))
+		}
 
 		body.AppendNewline()
 	}

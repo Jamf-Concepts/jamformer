@@ -2,6 +2,12 @@ name: CI
 
 on:
   pull_request:
+  # Manual runs. Every job here is cheap, hermetic and side-effect free — no
+  # tenant, no credentials, no writes — so there is nothing worth selecting
+  # between and no inputs to offer. Useful because CI is otherwise
+  # pull_request-only: a branch with no PR open gets no coverage at all, which
+  # is when the gates matter most.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,6 +34,73 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
+
+  drift:
+    name: Formatting and go fix drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would rewrite:"; echo "$unformatted"; exit 1
+          fi
+      - name: go fix
+        run: |
+          set -euo pipefail
+          # One pass is all a DRIFT CHECK needs. go fix is not idempotent in a
+          # single pass — a pass that adds a `//go:fix inline` directive only
+          # enables the NEXT pass to inline its call sites — but a tree already
+          # at a fixpoint yields no diff from one pass by definition. Iterating
+          # here would only let CI reach the fixpoint on the author's behalf,
+          # which is not this gate's job, and it could not do that anyway:
+          # `git diff` compares against HEAD, not against the previous pass, so
+          # it never clears once any pass has written.
+          go fix ./... >/dev/null
+          git diff --exit-code || {
+            echo "go fix produced changes — run it to a fixpoint locally and commit the result:"
+            echo "  go fix ./...   (repeat until it stops changing files)"
+            exit 1
+          }
+
+  cross-build:
+    name: Cross Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # jamformer is a CLI shipped for all three desktop platforms, and it
+        # branches on runtime.GOOS in more than one place — the update check's
+        # cache directory and its install-method detection both do. The
+        # ubuntu-only build above compiles none of the other platforms' paths,
+        # so a darwin- or windows-only break would ship. Repository CLAUDE.md
+        # also records a live instance of this class: a file named *_ios.go is
+        # silently constrained to GOOS=ios and stops building anywhere else.
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -v ./...
 
   lint:
     name: Lint

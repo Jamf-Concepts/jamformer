@@ -200,7 +200,11 @@ func RunPipeline(opts *PipelineOptions) (*postprocess.FixResult, error) {
 			logStep("  Fixed %d conditionally invalid attributes", fixResult.Fixed)
 		}
 		for _, v := range fixResult.RequiredVars {
-			logStep("  ⚠ %s: replaced null with var.%s (sensitive, value required)", v.Resource, v.VarName)
+			kind := "sensitive, value required"
+			if v.NotSensitive {
+				kind = "value required"
+			}
+			logStep("  ⚠ %s: replaced null with var.%s (%s)", v.Resource, v.VarName, kind)
 		}
 	}
 

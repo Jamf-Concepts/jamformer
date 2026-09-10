@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -186,14 +187,22 @@ func cleanupEmptyDirs(root string) {
 		}
 		return nil
 	})
-	for i := len(dirs) - 1; i >= 0; i-- {
-		_ = os.Remove(dirs[i]) // only removes if empty
+	for _, dir := range slices.Backward(dirs) {
+		_ = os.Remove(dir) // only removes if empty
 	}
 }
 
 // splitPartialEnvResources separates resources that exist in only some
-// environments into clearly-labeled files like policies_staging_only.tf.
-func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeToFileMap map[string]string) error {
+// environments into clearly-labeled files like policies_staging_only.tf, and
+// reports how many it actually moved.
+//
+// The count matters because it is routinely smaller than the number of partial
+// resources. The module is assembled from the source environment's generated
+// configuration alone, so a resource present only OUTSIDE the source
+// environment was never in the module and there is nothing here to relabel. It
+// is absent from the deliverable, which is what naming a source of truth means
+// — but the caller has to say so rather than report it as separated.
+func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeToFileMap map[string]string) (int, error) {
 	// Build map of partial-env resources: "type.label" → sorted env list
 	partial := make(map[string][]string)
 	for _, m := range matches {
@@ -207,8 +216,9 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 		partial[addr] = envs
 	}
 	if len(partial) == 0 {
-		return nil
+		return 0, nil
 	}
+	moved := 0
 
 	// Build reverse map: output filename → resource type
 	typeToFile := make(map[string]string, len(typeToFileMap))
@@ -259,6 +269,7 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 			}
 			targets[suffix].blocks = append(targets[suffix].blocks, block)
 			blocksToRemove = append(blocksToRemove, block)
+			moved++
 		}
 
 		if len(blocksToRemove) == 0 {
@@ -270,7 +281,7 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 			f.Body().RemoveBlock(block)
 		}
 		if err := os.WriteFile(file, f.Bytes(), 0644); err != nil {
-			return fmt.Errorf("writing %s: %w", base, err)
+			return moved, fmt.Errorf("writing %s: %w", base, err)
 		}
 
 		// Write partial blocks to _<envs>_only.tf files
@@ -295,12 +306,12 @@ func splitPartialEnvResources(moduleDir string, matches []MatchedResource, typeT
 				}
 			}
 			if err := os.WriteFile(outFile, newF.Bytes(), 0644); err != nil {
-				return fmt.Errorf("writing %s: %w", filepath.Base(outFile), err)
+				return moved, fmt.Errorf("writing %s: %w", filepath.Base(outFile), err)
 			}
 		}
 	}
 
-	return nil
+	return moved, nil
 }
 
 // appendBlockToBody copies a block from one file to another body via serialization.
@@ -532,7 +543,7 @@ var varRefRe = regexp.MustCompile(`\bvar\.([a-zA-Z0-9_]+)`)
 // them); the source-env post-processing declared them in a variables.tf that is
 // discarded when the module is assembled, so they must be re-declared on the
 // module and supplied per environment. They are returned as sensitive ModuleVars.
-func scanWriteOnlyVarRefs(moduleDir string, known map[string]bool) []ModuleVar {
+func scanWriteOnlyVarRefs(moduleDir string, known map[string]bool, declared map[string]declaredVar) []ModuleVar {
 	var result []ModuleVar
 	seen := make(map[string]bool)
 
@@ -557,7 +568,7 @@ func scanWriteOnlyVarRefs(moduleDir string, known map[string]bool) []ModuleVar {
 			if len(labels) < 2 {
 				continue
 			}
-			collectBareVarRefs(block.Body(), labels[0], labels[1], known, seen, &result)
+			collectBareVarRefs(block.Body(), labels[0], labels[1], known, seen, declared, &result)
 		}
 	}
 	return result
@@ -568,7 +579,7 @@ func scanWriteOnlyVarRefs(moduleDir string, known map[string]bool) []ModuleVar {
 // attributes (`x = { secret = var.y }`) — recording unknown ones as sensitive
 // vars. Names already accounted for by diffs or file variables (passed in via
 // known) are skipped.
-func collectBareVarRefs(body *hclwrite.Body, resourceType, label string, known, seen map[string]bool, out *[]ModuleVar) {
+func collectBareVarRefs(body *hclwrite.Body, resourceType, label string, known, seen map[string]bool, declared map[string]declaredVar, out *[]ModuleVar) {
 	for attrName, attr := range body.Attributes() {
 		exprBytes := attr.Expr().BuildTokens(nil).Bytes()
 		for _, m := range varRefRe.FindAllSubmatch(exprBytes, -1) {
@@ -577,18 +588,32 @@ func collectBareVarRefs(body *hclwrite.Body, resourceType, label string, known, 
 				continue
 			}
 			seen[varName] = true
-			*out = append(*out, ModuleVar{
+			mv := ModuleVar{
 				Name:         varName,
 				Description:  fmt.Sprintf("Write-only secret for %s.%s %s (Jamf never returns this value)", resourceType, label, attrName),
 				ResourceType: resourceType,
 				Label:        label,
 				AttrName:     attrName,
 				Sensitive:    true,
-			})
+			}
+			// Prefer the declaration the source environment already wrote.
+			// Post-processing knows why it created the variable and what shape
+			// the attribute takes; this scan only knows a var.X appears in an
+			// expression, so guessing "sensitive string" here overwrites a
+			// set(string) with a type the module will not validate, and calls a
+			// value the server merely returned empty a secret Jamf withholds.
+			if d, ok := declared[varName]; ok {
+				mv.Type = d.varType
+				mv.Sensitive = d.sensitive
+				if d.description != "" {
+					mv.Description = d.description
+				}
+			}
+			*out = append(*out, mv)
 		}
 	}
 	for _, block := range body.Blocks() {
-		collectBareVarRefs(block.Body(), resourceType, label, known, seen, out)
+		collectBareVarRefs(block.Body(), resourceType, label, known, seen, declared, out)
 	}
 }
 
@@ -625,7 +650,7 @@ func generateModuleVariables(moduleDir string, diffs []AttrDiff, fileVars []Modu
 		var b strings.Builder
 		fmt.Fprintf(&b, "variable %q {\n", v.Name)
 		fmt.Fprintf(&b, "  description = %q\n", v.Description)
-		fmt.Fprintf(&b, "  type        = string\n")
+		fmt.Fprintf(&b, "  type        = %s\n", v.VarType())
 		if v.Sensitive {
 			fmt.Fprintf(&b, "  sensitive   = true\n")
 		}
@@ -654,4 +679,51 @@ func generateModuleVariables(moduleDir string, diffs []AttrDiff, fileVars []Modu
 	}
 
 	return os.WriteFile(filepath.Join(moduleDir, "variables.tf"), []byte(content.String()), 0644)
+}
+
+// declaredVar is one variable declaration recovered from a variables.tf.
+type declaredVar struct {
+	varType     string
+	description string
+	sensitive   bool
+}
+
+// readDeclaredVars parses the variable blocks in a variables.tf, keyed by name.
+// The source environment's post-processing wrote that file, and module assembly
+// discards it — so it is read first, to re-declare each recovered variable as
+// the thing post-processing actually declared. A missing or unparseable file
+// yields no entries and every recovered variable falls back to its default
+// shape.
+func readDeclaredVars(path string) map[string]declaredVar {
+	out := make(map[string]declaredVar)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	f, diags := hclwrite.ParseConfig(data, path, hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return out
+	}
+	for _, block := range f.Body().Blocks() {
+		if block.Type() != "variable" || len(block.Labels()) != 1 {
+			continue
+		}
+		d := declaredVar{}
+		if attr := block.Body().GetAttribute("type"); attr != nil {
+			d.varType = strings.TrimSpace(string(attr.Expr().BuildTokens(nil).Bytes()))
+		}
+		if attr := block.Body().GetAttribute("description"); attr != nil {
+			for _, tok := range attr.Expr().BuildTokens(nil) {
+				if tok.Type == hclsyntax.TokenQuotedLit {
+					d.description = string(tok.Bytes)
+					break
+				}
+			}
+		}
+		if attr := block.Body().GetAttribute("sensitive"); attr != nil {
+			d.sensitive = strings.TrimSpace(string(attr.Expr().BuildTokens(nil).Bytes())) == "true"
+		}
+		out[block.Labels()[0]] = d
+	}
+	return out
 }
