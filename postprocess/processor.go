@@ -200,13 +200,21 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 	var pendingImports []*hclwrite.Block  // import blocks awaiting skip filtering
 	skippedAddrs := make(map[string]bool) // resource addresses dropped by a skip rule
 
-	// Count resources per type for progress output.
+	// Count resources per type for progress output, and record every resource
+	// address the generated config actually declares. An import block whose
+	// target is absent from that set is not importable: terraform rejects the
+	// whole plan with "Configuration for import target does not exist". This
+	// happens for a settings singleton whose import block jamformer writes up
+	// front but which -generate-config-out produced no resource block for,
+	// because the setting is not configured on the tenant.
 	typeCounts := make(map[string]int)
+	presentAddrs := make(map[string]bool)
 	for _, block := range f.Body().Blocks() {
 		if block.Type() == "resource" {
 			labels := block.Labels()
 			if len(labels) >= 2 {
 				typeCounts[labels[0]]++
+				presentAddrs[labels[0]+"."+labels[1]] = true
 			}
 		}
 	}
@@ -690,7 +698,7 @@ func Process(outputDir, generatedFile string, reg *registry.Registry, opts *Proc
 			continue
 		}
 		toBytes := strings.TrimSpace(string(toAttr.Expr().BuildTokens(nil).Bytes()))
-		if skippedAddrs[toBytes] {
+		if skippedAddrs[toBytes] || !presentAddrs[toBytes] {
 			continue
 		}
 		parts := strings.SplitN(toBytes, ".", 2)
