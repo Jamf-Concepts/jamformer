@@ -19,7 +19,7 @@ func writeOnlySchema() *tfjson.ProviderSchemas {
 	return &tfjson.ProviderSchemas{
 		FormatVersion: "1.0",
 		Schemas: map[string]*tfjson.ProviderSchema{
-			"registry.terraform.io/Jamf-Concepts/jamfplatform": {
+			"registry.terraform.io/jamf/jamfplatform": {
 				ResourceSchemas: map[string]*tfjson.Schema{
 					"jamfplatform_pro_automated_device_enrollment": {
 						Block: &tfjson.SchemaBlock{

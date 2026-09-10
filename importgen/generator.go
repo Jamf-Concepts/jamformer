@@ -343,7 +343,7 @@ func GeneratePlatform(outputDir string, creds *PlatformCredentials) error {
 	providerTF := fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }
@@ -360,7 +360,7 @@ func FinalizePlatform(outputDir string, creds *PlatformCredentials) error {
 	providerTF := fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }

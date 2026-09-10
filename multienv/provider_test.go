@@ -49,7 +49,7 @@ func TestPlatformProviderBlocks(t *testing.T) {
 
 	header := prov.EnvProviderHeader(env, ` version = "0.19.0"`, 0)
 	for _, want := range []string{
-		`source = "Jamf-Concepts/jamfplatform"`,
+		`source = "jamf/jamfplatform"`,
 		`provider "jamfplatform"`,
 		"base_url      = var.jamfplatform_base_url",
 		"client_id     = var.jamfplatform_client_id",
@@ -81,7 +81,7 @@ func TestPlatformProviderBlocks(t *testing.T) {
 	}
 
 	mod := prov.ModuleProvidersBlock("")
-	if !strings.Contains(mod, `source = "Jamf-Concepts/jamfplatform"`) {
+	if !strings.Contains(mod, `source = "jamf/jamfplatform"`) {
 		t.Errorf("ModuleProvidersBlock missing source:\n%s", mod)
 	}
 }

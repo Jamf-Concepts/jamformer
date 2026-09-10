@@ -625,8 +625,8 @@ func TestGeneratePlatform_ProviderFile(t *testing.T) {
 	}
 
 	s := string(content)
-	if !strings.Contains(s, `source = "Jamf-Concepts/jamfplatform"`) {
-		t.Error("expected provider source Jamf-Concepts/jamfplatform")
+	if !strings.Contains(s, `source = "jamf/jamfplatform"`) {
+		t.Error("expected provider source jamf/jamfplatform")
 	}
 	if !strings.Contains(s, `provider "jamfplatform"`) {
 		t.Error("expected jamfplatform provider block")

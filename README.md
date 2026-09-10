@@ -28,7 +28,7 @@ A CLI tool that converts a Jamf instance into a structured Terraform project. It
 
 | Provider | Flag | Auth | Discovery Method |
 |---|---|---|---|
-| [jamfplatform](https://github.com/Jamf-Concepts/terraform-provider-jamfplatform) **(default)** | `-provider jamfplatform` | OAuth2 only | `terraform query` (Terraform 1.14+) |
+| [jamfplatform](https://github.com/jamf/terraform-provider-jamfplatform) **(default)** | `-provider jamfplatform` | OAuth2 only | `terraform query` (Terraform 1.14+) |
 | [jamfprotect](https://github.com/Jamf-Concepts/terraform-provider-jamfprotect) | `-provider jamfprotect` | OAuth2 only | `terraform query` (Terraform 1.14+) |
 | [jsc](https://github.com/Jamf-Concepts/terraform-provider-jsctfprovider) | `-provider jsc` | Local account or Jamf ID | Terraform data sources |
 | [jamfpro](https://github.com/deploymenttheory/terraform-provider-jamfpro) — community provider by Deployment Theory | `-provider jamfpro` | Basic auth or OAuth2 | Jamf Pro API via SDK |
@@ -36,6 +36,12 @@ A CLI tool that converts a Jamf instance into a structured Terraform project. It
 `jamfplatform` federates the full Jamf Pro resource surface (`jamfplatform_pro_*`) alongside native Platform Services resources (blueprints, compliance benchmarks, device groups), Jamf Security Cloud (`jamfplatform_security_cloud_*`), Jamf AI Governance (`jamfplatform_ai_governance_*`) and Jamf Account single sign-on (`jamfplatform_account_*`) — and is the default. `jamfpro` is the community-maintained provider by Deployment Theory and remains fully supported.
 
 > The Jamf Platform API reached general availability on 3 September 2026. jamformer targets the GA gateway (`https://{region}.api.jamfcloud.com`) and provider `v0.30.0` or later. Beta API integration credentials are revoked, and `jamfplatform_pro_api_client` / `jamfplatform_pro_api_role` no longer exist — their endpoints were unpublished at GA. See [API integration scope](#api-integration-scope).
+
+> The `jamfplatform` provider moved to the `jamf` registry namespace at `v0.32.0`. jamformer generates `source = "jamf/jamfplatform"`, so a fresh export needs nothing extra. If you are re-running jamformer over a directory whose state was applied with a jamformer build that emitted `jamf-concepts/jamfplatform`, rewrite the state once before `terraform init`:
+>
+> ```bash
+> terraform state replace-provider jamf-concepts/jamfplatform jamf/jamfplatform
+> ```
 
 ## Resource Coverage
 

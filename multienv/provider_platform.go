@@ -13,7 +13,7 @@ import (
 	"github.com/Jamf-Concepts/jamformer/terraform"
 )
 
-// platformProvider implements Provider for the Jamf-Concepts/jamfplatform
+// platformProvider implements Provider for the jamf/jamfplatform
 // provider (OAuth2 only; tenant-scoped).
 type platformProvider struct{}
 
@@ -128,7 +128,7 @@ func (platformProvider) ModuleProvidersBlock(versionLine string) string {
 	return fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }
@@ -139,7 +139,7 @@ func (platformProvider) EnvProviderHeader(env EnvConfig, versionLine string, _ i
 	return fmt.Sprintf(`terraform {
   required_providers {
     jamfplatform = {
-      source = "Jamf-Concepts/jamfplatform"%s
+      source = "jamf/jamfplatform"%s
     }
   }
 }
