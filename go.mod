@@ -3,7 +3,7 @@ module github.com/Jamf-Concepts/jamformer
 go 1.27.1
 
 require (
-	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.22.0
+	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.23.0
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.8.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.53.0
 	github.com/hashicorp/go-version v1.9.0
@@ -117,7 +117,7 @@ require (
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/mod v0.40.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
+	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
