@@ -247,7 +247,11 @@ func RunPipeline(opts *Options) error {
 	for _, v := range fileVars {
 		knownVars[v.Name] = true
 	}
-	if writeOnlyVars := scanWriteOnlyVarRefs(moduleDir, knownVars); len(writeOnlyVars) > 0 {
+	// The source-env variables.tf is still in the output root at this point
+	// (cleanupOutputRoot removes it later), so each recovered variable can be
+	// re-declared as post-processing declared it rather than guessed at.
+	declaredVars := readDeclaredVars(filepath.Join(opts.OutputDir, "variables.tf"))
+	if writeOnlyVars := scanWriteOnlyVarRefs(moduleDir, knownVars, declaredVars); len(writeOnlyVars) > 0 {
 		logStep("  %d write-only secret(s) wired to environment variables", len(writeOnlyVars))
 		fileVars = append(fileVars, writeOnlyVars...)
 	}

@@ -554,7 +554,7 @@ resource "jamfplatform_pro_account" "a" {
 	}
 
 	known := map[string]bool{"known_diff": true}
-	vars := scanWriteOnlyVarRefs(dir, known)
+	vars := scanWriteOnlyVarRefs(dir, known, nil)
 
 	got := map[string]bool{}
 	for _, v := range vars {
@@ -631,5 +631,61 @@ resource "jamfplatform_pro_building" "everywhere" {
 	}
 	if !strings.Contains(string(shared), `"everywhere"`) {
 		t.Errorf("the all-envs resource should have stayed:\n%s", shared)
+	}
+}
+
+// A recovered variable must be re-declared as the source environment declared
+// it. The validation auto-fix answers a Required empty collection with a
+// set(string) variable that is not a secret; guessing "sensitive string" for it
+// produces a module terraform refuses to validate.
+func TestScanWriteOnlyVarRefs_KeepsDeclaredType(t *testing.T) {
+	dir := t.TempDir()
+	src := `resource "jamfplatform_blueprints_blueprint" "draft" {
+  device_groups = var.blueprint_draft_device_groups
+  admin_password = var.blueprint_secret
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "r.tf"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	varsTF := filepath.Join(dir, "source_variables.tf")
+	decl := `variable "blueprint_draft_device_groups" {
+  description = "Device groups the tenant returned empty"
+  type        = set(string)
+}
+`
+	if err := os.WriteFile(varsTF, []byte(decl), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	declared := readDeclaredVars(varsTF)
+	byName := map[string]ModuleVar{}
+	for _, v := range scanWriteOnlyVarRefs(dir, nil, declared) {
+		byName[v.Name] = v
+	}
+
+	groups, ok := byName["blueprint_draft_device_groups"]
+	if !ok {
+		t.Fatal("expected blueprint_draft_device_groups to be recovered")
+	}
+	if groups.VarType() != "set(string)" {
+		t.Errorf("declared type should be preserved, got %q", groups.VarType())
+	}
+	if groups.Sensitive {
+		t.Error("a variable the source env declared non-sensitive must not become sensitive")
+	}
+	if groups.Description != "Device groups the tenant returned empty" {
+		t.Errorf("declared description should be preserved, got %q", groups.Description)
+	}
+
+	// One with no declaration keeps the sensitive-string default.
+	secret, ok := byName["blueprint_secret"]
+	if !ok {
+		t.Fatal("expected blueprint_secret to be recovered")
+	}
+	if secret.VarType() != "string" || !secret.Sensitive {
+		t.Errorf("undeclared var should default to sensitive string, got type=%q sensitive=%v",
+			secret.VarType(), secret.Sensitive)
 	}
 }

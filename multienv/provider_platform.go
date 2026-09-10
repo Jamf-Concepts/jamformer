@@ -5,6 +5,7 @@ package multienv
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tfjson "github.com/hashicorp/terraform-json"
 
@@ -51,6 +52,18 @@ func (platformProvider) DiscoverAndGenerate(env EnvConfig, opts *Options) (*PerE
 	writePlatformPermissions(env, opts)
 
 	schemas, _ := ir.ProviderSchemas.(*tfjson.ProviderSchemas)
+
+	// Drop the non-creatable blueprint drafts before the auto-fix runs. The
+	// single-env pipeline does this inside postprocess.Process, which the
+	// multi-env path only reaches after the fix, and the fix would read a
+	// draft's empty device_groups as a Required empty collection and turn it
+	// into a variable — hiding the emptiness the skip keys on and carrying an
+	// unplannable draft into the module. See postprocess.StripBlueprintDrafts.
+	if n, err := postprocess.StripBlueprintDrafts(filepath.Join(tempDir, "generated.tf")); err != nil && !Quiet {
+		fmt.Printf("  Warning: could not strip blueprint drafts for %s: %v\n", env.Name, err)
+	} else if n > 0 && opts.Verbose && !Quiet {
+		fmt.Printf("  Dropped %d non-creatable blueprint draft(s) for %s\n", n, env.Name)
+	}
 
 	// Apply the validation auto-fix in place (temp dir still init'd) so the merged
 	// module and env roots inherit a plannable config. injectRequiredWriteOnly has

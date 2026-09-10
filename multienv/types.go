@@ -134,4 +134,17 @@ type ModuleVar struct {
 	AttrName     string // e.g. "script_contents"
 	FilePath     string // relative path to the divergent file, e.g. "scripts/install_agent.sh"
 	Sensitive    bool   // mark the declared variable sensitive (write-only secrets)
+	Type         string // declared HCL type; empty means "string"
+}
+
+// VarType returns the type to declare for v, defaulting to string. A recovered
+// variable carries the type the source environment declared for it, which is
+// not always a string: the validation auto-fix answers a Required empty
+// collection with a set(string), and declaring that one as a string produces a
+// module terraform refuses to even validate.
+func (v ModuleVar) VarType() string {
+	if v.Type == "" {
+		return "string"
+	}
+	return v.Type
 }

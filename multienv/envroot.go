@@ -161,7 +161,7 @@ func generateEnvVariablesTF(envDir string, prov Provider, env EnvConfig, diffs [
 		}
 		fmt.Fprintf(&content, "variable %q {\n", v.Name)
 		fmt.Fprintf(&content, "  description = %q\n", v.Description)
-		fmt.Fprintf(&content, "  type        = string\n")
+		fmt.Fprintf(&content, "  type        = %s\n", v.VarType())
 		if v.Sensitive {
 			fmt.Fprintf(&content, "  sensitive   = true\n")
 		}
