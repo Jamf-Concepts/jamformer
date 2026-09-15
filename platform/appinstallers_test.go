@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 )
 
 // One App Installer deployment, read back with the Required app_title_name as

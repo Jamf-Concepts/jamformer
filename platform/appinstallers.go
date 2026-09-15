@@ -10,9 +10,9 @@ import (
 	"os"
 	"strings"
 
-	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 	"github.com/zclconf/go-cty/cty"
 )
 
