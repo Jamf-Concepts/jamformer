@@ -5,7 +5,7 @@ package client
 import (
 	"testing"
 
-	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
+	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 )
 
 // The scope a Scope resolves to is asserted through the SDK client it is used to

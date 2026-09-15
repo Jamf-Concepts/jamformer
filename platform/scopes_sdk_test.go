@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
+	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 )
 
 // ResourceDef.Scopes is written out by hand on every entry in the Resources
