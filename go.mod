@@ -3,7 +3,6 @@ module github.com/Jamf-Concepts/jamformer
 go 1.27.1
 
 require (
-	github.com/Jamf-Concepts/jamfplatform-go-sdk v0.23.0
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.8.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.53.0
 	github.com/hashicorp/go-version v1.9.0
@@ -11,6 +10,7 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/hashicorp/terraform-exec v0.25.3
 	github.com/hashicorp/terraform-json v0.28.0
+	github.com/jamf/jamfplatform-go-sdk v1.1.0
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.19.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
@@ -113,13 +113,13 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/crypto v0.56.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
-	golang.org/x/mod v0.40.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 )

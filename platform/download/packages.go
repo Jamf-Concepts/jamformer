@@ -16,8 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
-	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
+	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 )
 
 // Quiet suppresses progress messages.
