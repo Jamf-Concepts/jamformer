@@ -159,8 +159,8 @@ github.com/hashicorp/terraform-json v0.28.0 h1:dOkJT55rWfU6T1/VklHde51ym4LfNP+9x
 github.com/hashicorp/terraform-json v0.28.0/go.mod h1:PJIRf+Yzu5iLb52c/xYp1tUOL4jzMzfIAB5gvWWKIWE=
 github.com/huandu/xstrings v1.5.0 h1:2ag3IFq9ZDANvthTwTiqSSZLjDc+BedvHPAp5tJy2TI=
 github.com/huandu/xstrings v1.5.0/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=
-github.com/jamf/jamfplatform-go-sdk v1.1.0 h1:P6lGke3l7t5ktLIKg4mYvz7mx9mHPO4gosU0wAvbf9Q=
-github.com/jamf/jamfplatform-go-sdk v1.1.0/go.mod h1:QqbUlIakbYVvJlcqa6JEDA6dLxl9Tr9m9pQdBZ1wvKk=
+github.com/jamf/jamfplatform-go-sdk v1.2.0 h1:t0XYcs4sUAzRU/4zBUu0FLhqSfn6R0znqyWvx8Nu3R4=
+github.com/jamf/jamfplatform-go-sdk v1.2.0/go.mod h1:QqbUlIakbYVvJlcqa6JEDA6dLxl9Tr9m9pQdBZ1wvKk=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 h1:BQSFePA1RWJOlocH6Fxy8MmwDt+yVQYULKfN0RoTN8A=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99/go.mod h1:1lJo3i6rXxKeerYnT8Nvf0QmHCRC1n8sfWVwXF2Frvo=
 github.com/kevinburke/ssh_config v1.2.0 h1:x584FjTGwHzMwvHx18PXxbBVzfnxogHaAReU4gf13a4=
