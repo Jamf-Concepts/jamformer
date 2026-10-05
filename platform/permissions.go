@@ -9,15 +9,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
-	sdkaccount "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/account"
-	sdkaigov "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/aigovernance"
-	sdkblueprints "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/blueprints"
-	sdkbenchmarks "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/compliancebenchmarks"
-	sdkdevicegroups "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/devicegroups"
-	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
-	sdkproclassic "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/proclassic"
-	sdksecuritycloud "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/securitycloud"
+	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
+	sdkaccount "github.com/jamf/jamfplatform-go-sdk/jamfplatform/account"
+	sdkaigov "github.com/jamf/jamfplatform-go-sdk/jamfplatform/aigovernance"
+	sdkblueprints "github.com/jamf/jamfplatform-go-sdk/jamfplatform/blueprints"
+	sdkbenchmarks "github.com/jamf/jamfplatform-go-sdk/jamfplatform/compliancebenchmarks"
+	sdkdevicegroups "github.com/jamf/jamfplatform-go-sdk/jamfplatform/devicegroups"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
+	sdkproclassic "github.com/jamf/jamfplatform-go-sdk/jamfplatform/proclassic"
+	sdksecuritycloud "github.com/jamf/jamfplatform-go-sdk/jamfplatform/securitycloud"
 )
 
 // The permissions a jamformer run needs are the READ permissions of the

@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform"
-	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
+	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 )
 
 // Scope carries the API integration's scope to the SDK. It mirrors

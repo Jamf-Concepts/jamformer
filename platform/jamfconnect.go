@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	sdkpro "github.com/Jamf-Concepts/jamfplatform-go-sdk/jamfplatform/pro"
+	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 
 	"github.com/Jamf-Concepts/jamformer/naming"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
