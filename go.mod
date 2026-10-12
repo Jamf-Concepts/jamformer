@@ -9,7 +9,7 @@ require (
 	github.com/hashicorp/hc-install v0.9.5
 	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/hashicorp/terraform-exec v0.25.3
-	github.com/hashicorp/terraform-json v0.28.0
+	github.com/hashicorp/terraform-json v0.29.0
 	github.com/jamf/jamfplatform-go-sdk v1.1.0
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.19.0
