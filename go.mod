@@ -1,6 +1,6 @@
 module github.com/Jamf-Concepts/jamformer
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.9.0
@@ -10,7 +10,7 @@ require (
 	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/hashicorp/terraform-exec v0.25.3
 	github.com/hashicorp/terraform-json v0.29.0
-	github.com/jamf/jamfplatform-go-sdk v1.2.0
+	github.com/jamf/jamfplatform-go-sdk v1.5.0
 	github.com/rs/zerolog v1.35.1
 	github.com/zclconf/go-cty v1.19.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
