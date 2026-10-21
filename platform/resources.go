@@ -592,6 +592,10 @@ func DefaultRules() []postprocess.ReferenceRule {
 		single(policy, "remediate_disk_encryption_configuration_id", tDiskEnc, "disk_encryption"),
 		elem(policy, "categories", "id", tCategory, "self_service"),
 		single(policy, "id", tIcon, "self_service", "self_service_icon"),
+		single(macApp, "id", tIcon, "self_service", "self_service_icon"),
+		single(mobApp, "id", tIcon, "self_service", "self_service_icon"),
+		single(ebook, "icon_id", tIcon, "self_service"),
+		single(patchPol, "self_service_icon_id", tIcon, "user_interaction"),
 
 		// --- macOS configuration profile ---
 		cat(macProfile, "general"),
