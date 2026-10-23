@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
@@ -158,12 +159,40 @@ func downloadPackage(ctx context.Context, pc *sdkpro.Client, fileName, pkgsDir s
 	return relPath
 }
 
+// The package bytes come from a presigned CloudFront URL, not the gateway, so
+// the SDK client's response-header timeout does not cover them. Two bounds
+// replace the none http.DefaultClient applies, and neither is an overall
+// deadline, which a multi-gigabyte package could legitimately exceed:
+//
+//   - responseHeaderTimeout ends a request CloudFront accepts and never answers.
+//   - stallTimeout ends a transfer that stops delivering bytes part-way.
+//
+// Both are vars so tests can shorten them.
+var (
+	responseHeaderTimeout = 60 * time.Second
+	stallTimeout          = 60 * time.Second
+	downloadClient        = newDownloadClient(responseHeaderTimeout)
+)
+
+var errStalled = errors.New("download stalled")
+
+// newDownloadClient builds the client for CloudFront downloads: the default
+// transport's dial, TLS and proxy settings, plus a response-header timeout.
+func newDownloadClient(headerTimeout time.Duration) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{Transport: t}
+}
+
 func downloadFile(ctx context.Context, url, dest string) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -179,8 +208,30 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	_, err = io.Copy(f, resp.Body)
+	// Cancel the request when no bytes arrive for stallTimeout; every Read that
+	// delivers data pushes the deadline back.
+	timer := time.AfterFunc(stallTimeout, func() { cancel(errStalled) })
+	defer timer.Stop()
+
+	_, err = io.Copy(f, &stallReader{r: resp.Body, timer: timer})
+	if err != nil && errors.Is(context.Cause(ctx), errStalled) {
+		return fmt.Errorf("%w: no data for %v", errStalled, stallTimeout)
+	}
 	return err
+}
+
+// stallReader resets timer whenever a Read delivers data.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(stallTimeout)
+	}
+	return n, err
 }
 
 // safePackageFileName reduces an API-supplied filename to a single path

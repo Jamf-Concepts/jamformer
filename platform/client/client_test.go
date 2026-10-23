@@ -3,7 +3,11 @@
 package client
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 )
@@ -101,5 +105,70 @@ func TestOnlyHeaderBearingScopesContributeOptions(t *testing.T) {
 		if got := len(tc.scope.options()); got != tc.want {
 			t.Errorf("%s scope produced %d SDK options, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+// The SDK's default inter-request interval gates request starts at 100ms, a
+// 10 req/s ceiling. The clients jamformer builds turn it off (gateway
+// rate-limit pacing stays on regardless), so serial requests against a gateway
+// that reports no rate limit are not spaced at all. At the SDK default the
+// requests below would take at least 1.9s; unpaced they take milliseconds.
+func TestClientsAreNotPacedBetweenRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/auth/token" {
+			_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"totalCount":0,"results":[]}`))
+	}))
+	defer srv.Close()
+
+	pc := NewProClient(srv.URL, "id", "secret", Scope{EnvironmentID: "e1"})
+	const requests = 20
+	start := time.Now()
+	for range requests {
+		if _, err := pc.ListPackagesV1(context.Background(), nil, ""); err != nil {
+			t.Fatalf("ListPackagesV1: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Errorf("%d requests took %v; the client is still paced between requests", requests, elapsed)
+	}
+}
+
+// A gateway that accepts a request and never answers must not hang the export:
+// the SDK sets no response-header timeout by default (since v1.3.0) and
+// jamformer's contexts carry no deadline, so the client's own bound is the only
+// thing that ends the wait.
+func TestStalledGatewayTimesOut(t *testing.T) {
+	prev := responseHeaderTimeout
+	responseHeaderTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { responseHeaderTimeout = prev })
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/auth/token" {
+			_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		case <-time.After(6 * time.Second): // fail the test rather than hang it
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	pc := NewProClient(srv.URL, "id", "secret", Scope{EnvironmentID: "e1"})
+	start := time.Now()
+	_, err := pc.ListPackagesV1(context.Background(), nil, "")
+	if err == nil {
+		t.Fatal("ListPackagesV1 against a stalled gateway returned no error")
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Errorf("stalled request took %v to fail; the response-header timeout is not applied", elapsed)
 	}
 }

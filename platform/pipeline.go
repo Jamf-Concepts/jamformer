@@ -533,7 +533,13 @@ func RunDiscoveryAndGenerate(opts *PipelineOptions) (*IntermediateResult, error)
 	// 6c. Synthesise jamfplatform_pro_icon resources from self_service_icon
 	// references on policies (icons are not query-discoverable). Registers each
 	// icon so the self_service_icon.id reference rewrites in post-processing.
-	if iconCount, iconErr := GenerateIcons(generatedFile, reg); iconErr != nil {
+	// The icon uri is Computed-only and absent from generated config, so it is
+	// looked up through the federated pro SDK when the scope reaches it.
+	var iconLookup iconGetter
+	if opts.Scope.ReachesPro() {
+		iconLookup = client.NewProClient(opts.BaseURL, opts.ClientID, opts.ClientSecret, opts.Scope.clientScope())
+	}
+	if iconCount, iconErr := GenerateIcons(terraform.Ctx, iconLookup, generatedFile, reg); iconErr != nil {
 		if !opts.Quiet {
 			fmt.Printf("  Warning: could not synthesise icon resources: %v\n", iconErr)
 		}
