@@ -76,6 +76,13 @@ var (
 	// explicit-null Required attribute: wire it to a variable the user supplies.
 	crossFieldRequiresRe = regexp.MustCompile("(?i)which requires [`'\"]([a-z0-9_.]+)[`'\"]")
 
+	// crossFieldSetFalseRe matches a cross-field validator that rejects a boolean
+	// the tenant reports as true but Jamf Pro only honours alongside another
+	// setting ("Set sso_for_enrollment_enabled to false (or omit it), or change
+	// configuration_type."). The read-back value is the server's coerced truth,
+	// so false is the faithful config.
+	crossFieldSetFalseRe = regexp.MustCompile(`Set ([a-z0-9_]+) to false \(or omit it\)`)
+
 	// attrLineRe splits an `  attr = value  # comment` line into its assignment
 	// prefix, value, and optional trailing comment.
 	attrLineRe = regexp.MustCompile(`^(\s*[\w.]+\s*=\s*)(.*?)(\s*#.*)?$`)
@@ -287,6 +294,19 @@ func applyFixPass(outputDir string, diags []tfjson.Diagnostic, schema *ProviderS
 					requiredVars = append(requiredVars, rv)
 					edits = append(edits, FixEdit{resType + "." + resLabel, attr, "replaced with var." + varName, diag.Summary})
 				}
+			}
+			continue
+		}
+
+		// A boolean the provider read as true but that its own validator says
+		// is coerced to false under the sibling configuration: set it false at
+		// the attribute's own line.
+		if m := crossFieldSetFalseRe.FindStringSubmatch(diag.Detail); len(m) >= 2 {
+			if line := findAttrLineInBlock(filePath, diag.Range.Start.Line, m[1]); line > 0 &&
+				setAttributeValueAtLine(filePath, line, "false") {
+				src, _ := os.ReadFile(filePath)
+				resType, resLabel := resourceAtLine(src, line)
+				edits = append(edits, FixEdit{resType + "." + resLabel, m[1], "set to false", diag.Summary})
 			}
 			continue
 		}
@@ -1014,4 +1034,22 @@ func resourceAtLine(src []byte, line int) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// findAttrLineInBlock returns the 1-based line of the first `attr =` assignment
+// at or after startLine (the diagnostic's own line, which is normally the
+// attribute itself), or 0 when none is found within the file.
+func findAttrLineInBlock(filePath string, startLine int, attr string) int {
+	src, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0
+	}
+	re := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(attr) + `\s*=`)
+	lines := strings.Split(string(src), "\n")
+	for i := startLine - 1; i >= 0 && i < len(lines); i++ {
+		if re.MatchString(lines[i]) {
+			return i + 1
+		}
+	}
+	return 0
 }

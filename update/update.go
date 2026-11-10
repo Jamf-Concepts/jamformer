@@ -13,7 +13,7 @@ package update
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -220,7 +220,7 @@ func latestRelease(ctx context.Context) (tag, url string, err error) {
 	}
 
 	var rel release
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &rel); err != nil {
 		return "", "", err
 	}
 	if rel.Draft || rel.Prerel || rel.TagName == "" {

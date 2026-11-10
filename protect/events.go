@@ -4,7 +4,7 @@ package protect
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"os"
 )
