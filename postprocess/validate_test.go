@@ -1228,3 +1228,25 @@ func TestCrossFieldRequiredSkipsWriteOnly(t *testing.T) {
 		t.Fatalf("a WriteOnly attribute must be left to injectRequiredWriteOnly, got vars=%+v edits=%+v", vars, edits)
 	}
 }
+
+func TestFindAttrLineInBlockAndSetFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.tf")
+	src := "resource \"x\" \"y\" {\n  sso_for_enrollment_enabled = true\n  other = 1\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !crossFieldSetFalseRe.MatchString("Set sso_for_enrollment_enabled to false (or omit it), or change x.") {
+		t.Fatal("regex should match the validator detail")
+	}
+	line := findAttrLineInBlock(path, 2, "sso_for_enrollment_enabled")
+	if line != 2 {
+		t.Fatalf("line = %d, want 2", line)
+	}
+	if !setAttributeValueAtLine(path, line, "false") {
+		t.Fatal("setAttributeValueAtLine failed")
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "sso_for_enrollment_enabled = false") {
+		t.Errorf("got:\n%s", b)
+	}
+}
