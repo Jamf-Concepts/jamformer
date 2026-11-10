@@ -62,7 +62,7 @@ This is always the authoritative, current list — it's generated from the same 
 - **Jamf Pro:** A user account with read/auditor access, or an API integration with appropriate privileges.
 - **JSC:** A local account or Jamf ID with access to Jamf Security Cloud (radar.wandera.com). SSO/SAML accounts are not supported.
 
-Terraform 1.15.x is automatically downloaded if not already installed (cached in a temp directory). Use `-terraform-path` to override with a pre-installed binary.
+The latest stable Terraform is automatically downloaded on each run (the cached copy is the offline fallback) if not already installed (cached in a temp directory). Use `-terraform-path` to override with a pre-installed binary.
 
 ## Installation
 

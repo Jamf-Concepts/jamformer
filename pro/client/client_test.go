@@ -3,7 +3,7 @@
 package client
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,7 +20,7 @@ func TestProbeTokenLifetime(t *testing.T) {
 			name: "success with expires_in",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"expires_in": 3600, "access_token": "tok"})
+				_ = json.MarshalWrite(w, map[string]any{"expires_in": 3600, "access_token": "tok"})
 			},
 			wantLife: 3600,
 		},
@@ -28,7 +28,7 @@ func TestProbeTokenLifetime(t *testing.T) {
 			name: "short-lived token",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"expires_in": 60})
+				_ = json.MarshalWrite(w, map[string]any{"expires_in": 60})
 			},
 			wantLife: 60,
 		},
@@ -61,7 +61,7 @@ func TestProbeTokenLifetime(t *testing.T) {
 			name: "missing expires_in field",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok"})
+				_ = json.MarshalWrite(w, map[string]any{"access_token": "tok"})
 			},
 			wantLife: 0,
 			wantErr:  false, // no error, just zero value
@@ -114,7 +114,7 @@ func TestProbeTokenLifetimeSendsCorrectRequest(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"expires_in": 1800})
+		_ = json.MarshalWrite(w, map[string]any{"expires_in": 1800})
 	}))
 	defer srv.Close()
 

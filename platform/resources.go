@@ -561,7 +561,7 @@ func DefaultRules() []postprocess.ReferenceRule {
 		// activation_conditions is a free-form expression that embeds device-group
 		// Platform UUIDs in quoted-literal sets; resolve each to a ${...id}
 		// interpolation so the condition tracks the group it points at.
-		{ResourceType: "jamfplatform_blueprints_blueprint", AttrName: "activation_conditions", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", EmbeddedIDs: true},
+		{ResourceType: "jamfplatform_blueprints_blueprint", AttrName: "component_blocks", ElementAttr: "activation_conditions", TargetTypes: []string{"jamfplatform_device_group"}, TargetAttr: "id", EmbeddedIDs: true},
 		// GA renamed the singular target_device_group to a set of device group
 		// identifiers. The provider folds a singular value in during its state
 		// upgrade, but generated config carries the new plural attribute.
@@ -587,6 +587,10 @@ func DefaultRules() []postprocess.ReferenceRule {
 		elem(policy, "packages", "id", tPackage, "packages"),
 		elem(policy, "printers", "id", tPrinter, "printers"),
 		elem(policy, "dock_items", "id", tDockItem, "dock_items"),
+		// Flattened successors (provider 1.8+); config generation emits only these.
+		elem(policy, "script_assignments", "id", tScript),
+		elem(policy, "printer_assignments", "id", tPrinter),
+		elem(policy, "dock_item_assignments", "id", tDockItem),
 		elem(policy, "directory_bindings", "id", tDirBinding),
 		single(policy, "disk_encryption_configuration_id", tDiskEnc, "disk_encryption"),
 		single(policy, "remediate_disk_encryption_configuration_id", tDiskEnc, "disk_encryption"),
@@ -676,6 +680,7 @@ func DefaultRules() []postprocess.ReferenceRule {
 		single(compPre, "device_enrollment_program_instance_id", ade),
 		single(compPre, "psso_config_profile_id", tMacProfile),
 		list(compPre, "prestage_installed_profile_ids", tMacProfile),
+		list(compPre, "configuration_profile_ids", tMacProfile),
 		list(compPre, "custom_package_ids", tPackage),
 		single(compPre, "building_id", tBuilding, "location_information"),
 		single(compPre, "department_id", tDepartment, "location_information"),

@@ -51,7 +51,7 @@ func rewriteBlock(body *hclwrite.Body, blockPath []string, rule ReferenceRule, r
 // single ID. Returns true if the body was modified.
 func applyLeafRewrite(body *hclwrite.Body, rule ReferenceRule, reg *registry.Registry) bool {
 	switch {
-	case rule.EmbeddedIDs:
+	case rule.EmbeddedIDs && rule.ElementAttr == "":
 		return rewriteEmbeddedIDs(body, rule, reg)
 	case rule.PrefixedIDs && rule.ElementAttr == "":
 		return rewritePrefixedID(body, rule.AttrName, rule, reg)
@@ -351,6 +351,11 @@ func rewriteElementsInList(exprBytes []byte, rule ReferenceRule, reg *registry.R
 			}
 			objBytes := exprBytes[i : objClose+1]
 			if processed, ok := descendObjectExpr(objBytes, nil, func(leaf *hclwrite.Body) bool {
+				if rule.EmbeddedIDs {
+					er := rule
+					er.AttrName, er.ElementAttr = rule.ElementAttr, ""
+					return rewriteEmbeddedIDs(leaf, er, reg)
+				}
 				if rule.PrefixedIDs {
 					return rewritePrefixedID(leaf, rule.ElementAttr, rule, reg)
 				}

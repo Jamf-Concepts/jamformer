@@ -1705,3 +1705,78 @@ resource "jamfplatform_blueprints_blueprint" "test" {
 		t.Errorf("rewritten HCL no longer parses: %s\n%s", diags.Error(), result)
 	}
 }
+
+// TestEmbeddedDeviceGroupIDsInComponentBlocks covers the GA blueprint shape, where
+// activation_conditions lives on each component_blocks element rather than at the
+// top level of the resource.
+func TestEmbeddedDeviceGroupIDsInComponentBlocks(t *testing.T) {
+	reg := registry.New()
+	reg.Register("jamfplatform_device_group", "fce3d9a5-8660-42ff-a95e-625e7b53b48a", "jamfplatform_device_group.shared_ipads")
+
+	f := parseHCLRef(t, `
+resource "jamfplatform_blueprints_blueprint" "test" {
+  name = "test"
+  component_blocks = [
+    {
+      name                  = "Declaration group"
+      activation_conditions = "ANY @property(jamf.device.groups) IN {'fce3d9a5-8660-42ff-a95e-625e7b53b48a'} AND @status(device.model.family) == 'iPad'"
+    },
+    {
+      name = "Other"
+    },
+  ]
+}
+`)
+	body := refBlockBody(t, f)
+	rule := postprocess.ReferenceRule{
+		ResourceType: "jamfplatform_blueprints_blueprint",
+		AttrName:     "component_blocks",
+		ElementAttr:  "activation_conditions",
+		TargetTypes:  []string{"jamfplatform_device_group"},
+		TargetAttr:   "id",
+		EmbeddedIDs:  true,
+	}
+	postprocess.RewriteBlockForTest(body, rule.BlockPath, rule, reg)
+
+	result := string(f.Bytes())
+	if !strings.Contains(result, "${jamfplatform_device_group.shared_ipads.id}") {
+		t.Errorf("expected embedded device-group interpolation, got:\n%s", result)
+	}
+	if !strings.Contains(result, "@status(device.model.family) == 'iPad'") {
+		t.Errorf("expected surrounding expression preserved, got:\n%s", result)
+	}
+	if _, diags := hclwrite.ParseConfig(f.Bytes(), "out.tf", hcl.Pos{Line: 1, Column: 1}); diags.HasErrors() {
+		t.Errorf("rewritten HCL no longer parses: %s\n%s", diags.Error(), result)
+	}
+}
+
+// TestPolicyScriptAssignmentsReference covers the flattened top-level
+// script_assignments attribute that replaced scripts.scripts.
+func TestPolicyScriptAssignmentsReference(t *testing.T) {
+	reg := registry.New()
+	reg.Register("jamfplatform_pro_script", "44", "jamfplatform_pro_script.install")
+
+	f := parseHCLRef(t, `
+resource "jamfplatform_pro_policy" "test" {
+  script_assignments = [
+    {
+      id       = "44"
+      priority = "After"
+    },
+  ]
+}
+`)
+	body := refBlockBody(t, f)
+	rule := postprocess.ReferenceRule{
+		ResourceType: "jamfplatform_pro_policy",
+		AttrName:     "script_assignments",
+		ElementAttr:  "id",
+		TargetTypes:  []string{"jamfplatform_pro_script"},
+		TargetAttr:   "id",
+	}
+	postprocess.RewriteBlockForTest(body, rule.BlockPath, rule, reg)
+
+	if result := string(f.Bytes()); !strings.Contains(result, "jamfplatform_pro_script.install.id") {
+		t.Errorf("expected script reference, got:\n%s", result)
+	}
+}

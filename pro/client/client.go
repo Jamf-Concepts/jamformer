@@ -3,7 +3,7 @@
 package client
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -120,7 +120,7 @@ func probeTokenLifetime(instanceURL, clientID, clientSecret string) (int, error)
 	var tokenResp struct {
 		ExpiresIn int `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &tokenResp); err != nil {
 		return 0, err
 	}
 
