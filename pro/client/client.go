@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	"github.com/deploymenttheory/go-api-sdk-jamfpro/sdk/jamfpro"
 )
 
@@ -51,6 +52,11 @@ func VerifyAuth(auth *AuthConfig) (*jamfpro.Client, error) {
 
 // New creates a new Jamf Pro API client using the provided auth config.
 func New(auth *AuthConfig) (*jamfpro.Client, error) {
+	// The SDK hardcodes its own User-Agent and builds its own http.Client, so
+	// override it at the default transport it falls back to. Also covers the
+	// token probe below.
+	useragent.InstallDefault()
+
 	// Ensure URL has scheme and no trailing slash
 	instanceURL := strings.TrimRight(auth.URL, "/")
 	if !strings.HasPrefix(instanceURL, "https://") && !strings.HasPrefix(instanceURL, "http://") {

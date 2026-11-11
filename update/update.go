@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	goversion "github.com/hashicorp/go-version"
 )
 
@@ -200,7 +201,7 @@ func latestRelease(ctx context.Context) (tag, url string, err error) {
 		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "jamformer-update-check")
+	req.Header.Set("User-Agent", useragent.String())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

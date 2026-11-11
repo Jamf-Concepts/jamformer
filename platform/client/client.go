@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 )
@@ -61,6 +62,7 @@ func newClient(baseURL, clientID, clientSecret string, scope Scope) *jamfplatfor
 	opts := append([]jamfplatform.Option{
 		jamfplatform.WithMinRequestInterval(0),
 		jamfplatform.WithResponseHeaderTimeout(responseHeaderTimeout),
+		jamfplatform.WithUserAgent(useragent.String()),
 	}, scope.options()...)
 	return jamfplatform.NewClient(baseURL, clientID, clientSecret, opts...)
 }
