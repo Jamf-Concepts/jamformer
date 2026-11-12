@@ -13,7 +13,10 @@ import (
 )
 
 // NormalizeSharedIpadActivationLock sets prevent_activation_lock = true on any
-// mobile_device_prestage_enrollment with multi_user = true (Shared iPad).
+// mobile_device_prestage_enrollment with enable_shared_ipad = true (Shared iPad).
+// The provider renamed multi_user to enable_shared_ipad in v1.8.0 and still
+// accepts the old name for the deprecation window, so either one marks a
+// Shared iPad prestage here.
 //
 // This is not a value the admin can choose: when Shared iPad is enabled the Jamf
 // Pro UI auto-checks "Prevent user from enabling Activation Lock" and disables
@@ -45,7 +48,7 @@ func NormalizeSharedIpadActivationLock(generatedFile string) (int, error) {
 			continue
 		}
 		body := block.Body()
-		if !attrIsTrue(body, "multi_user") {
+		if !attrIsTrue(body, "enable_shared_ipad") && !attrIsTrue(body, "multi_user") {
 			continue
 		}
 		pal := body.GetAttribute("prevent_activation_lock")

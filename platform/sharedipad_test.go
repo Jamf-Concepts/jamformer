@@ -21,6 +21,11 @@ resource "jamfplatform_pro_mobile_device_prestage_enrollment" "shared_ok" {
   prevent_activation_lock = true
 }
 
+resource "jamfplatform_pro_mobile_device_prestage_enrollment" "shared_renamed" {
+  enable_shared_ipad      = true
+  prevent_activation_lock = false
+}
+
 resource "jamfplatform_pro_mobile_device_prestage_enrollment" "not_shared" {
   multi_user              = false
   prevent_activation_lock = false
@@ -35,9 +40,9 @@ resource "jamfplatform_pro_mobile_device_prestage_enrollment" "not_shared" {
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	// Only the legacy Shared iPad prestage with false is changed.
-	if n != 1 {
-		t.Errorf("expected 1 adjusted, got %d", n)
+	// Only the Shared iPad prestages (old and new attribute name) with false are changed.
+	if n != 2 {
+		t.Errorf("expected 2 adjusted, got %d", n)
 	}
 
 	out, _ := os.ReadFile(path)
@@ -46,6 +51,10 @@ resource "jamfplatform_pro_mobile_device_prestage_enrollment" "not_shared" {
 	legacy := s[strings.Index(s, `"shared_legacy"`):]
 	if !strings.Contains(legacy[:strings.Index(legacy, "}")], "prevent_activation_lock = true") {
 		t.Error("shared_legacy prevent_activation_lock should be coerced to true")
+	}
+	renamed := s[strings.Index(s, `"shared_renamed"`):]
+	if !strings.Contains(renamed[:strings.Index(renamed, "}")], "prevent_activation_lock = true") {
+		t.Error("shared_renamed (enable_shared_ipad) prevent_activation_lock should be coerced to true")
 	}
 	// A non-Shared prestage keeps its false (Jamf doesn't force it there).
 	notShared := s[strings.Index(s, `"not_shared"`):]
