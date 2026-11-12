@@ -17,6 +17,7 @@ func TestProtectTypeToFileMap(t *testing.T) {
 		"jamfprotect_exception_set",
 		"jamfprotect_group",
 		"jamfprotect_plan",
+		"jamfprotect_prevent_list_set",
 		"jamfprotect_removable_storage_control_set",
 		"jamfprotect_role",
 		"jamfprotect_telemetry",
@@ -66,6 +67,7 @@ func TestProtectDefaultRulesCount(t *testing.T) {
 		"jamfprotect_api_client",
 		"jamfprotect_analytic_set",
 		"jamfprotect_unified_logging_filter_set",
+		"jamfprotect_prevent_list_set",
 		"jamfprotect_plan",
 	}
 	for _, rt := range expected {
