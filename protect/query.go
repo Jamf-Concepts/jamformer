@@ -25,6 +25,7 @@ var listableResourceTypes = map[string]string{
 	"custom_prevent_lists":           "jamfprotect_custom_prevent_list",
 	"exception_sets":                 "jamfprotect_exception_set",
 	"groups":                         "jamfprotect_group",
+	"prevent_list_sets":              "jamfprotect_prevent_list_set",
 	"plans":                          "jamfprotect_plan",
 	"removable_storage_control_sets": "jamfprotect_removable_storage_control_set",
 	"roles":                          "jamfprotect_role",

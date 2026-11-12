@@ -28,6 +28,7 @@ var Resources = []ResourceDef{
 	{FilterKey: "unified_logging_filters", DisplayName: "Unified Logging Filters", TFType: "jamfprotect_unified_logging_filter", OutputFile: "unified_logging_filters.tf"},
 	{FilterKey: "unified_logging_filter_sets", DisplayName: "Unified Logging Filter Sets", TFType: "jamfprotect_unified_logging_filter_set", OutputFile: "unified_logging_filter_sets.tf"},
 	{FilterKey: "custom_prevent_lists", DisplayName: "Custom Prevent Lists", TFType: "jamfprotect_custom_prevent_list", OutputFile: "custom_prevent_lists.tf"},
+	{FilterKey: "prevent_list_sets", DisplayName: "Prevent List Sets", TFType: "jamfprotect_prevent_list_set", OutputFile: "prevent_list_sets.tf"},
 	{FilterKey: "removable_storage_control_sets", DisplayName: "Removable Storage Control Sets", TFType: "jamfprotect_removable_storage_control_set", OutputFile: "removable_storage_control_sets.tf"},
 	{FilterKey: "plans", DisplayName: "Plans", TFType: "jamfprotect_plan", OutputFile: "plans.tf"},
 	{FilterKey: "change_management", DisplayName: "Change Management (singleton)", TFType: "jamfprotect_change_management", OutputFile: "change_management.tf"},
@@ -105,6 +106,14 @@ func DefaultRules() []postprocess.ReferenceRule {
 			TargetAttr:   "id",
 			IsList:       true,
 		},
+		// Prevent List Set -> Custom Prevent List references
+		{
+			ResourceType: "jamfprotect_prevent_list_set",
+			AttrName:     "prevent_lists",
+			TargetTypes:  []string{"jamfprotect_custom_prevent_list"},
+			TargetAttr:   "id",
+			IsList:       true,
+		},
 		// Plan -> Action Configuration reference
 		{
 			ResourceType: "jamfprotect_plan",
@@ -147,6 +156,14 @@ func DefaultRules() []postprocess.ReferenceRule {
 			ResourceType: "jamfprotect_plan",
 			AttrName:     "unified_logging_filter_sets",
 			TargetTypes:  []string{"jamfprotect_unified_logging_filter_set"},
+			TargetAttr:   "id",
+			IsList:       true,
+		},
+		// Plan -> Prevent List Set references
+		{
+			ResourceType: "jamfprotect_plan",
+			AttrName:     "prevent_list_sets",
+			TargetTypes:  []string{"jamfprotect_prevent_list_set"},
 			TargetAttr:   "id",
 			IsList:       true,
 		},

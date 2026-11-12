@@ -54,7 +54,7 @@ jamformer is a CLI tool that converts a Jamf instance into a structured Terrafor
 ### Jamf Protect Pipeline (protect/pipeline.go → RunPipeline)
 
 1. **importgen** — Writes `provider.tf`, `variables.tf`, `terraform.tfvars` for the Jamf Protect provider (OAuth2 only)
-2. **protect** — Generates `query.tfquery.hcl` with `list {}` blocks for 14 listable resource types + `singletons_import.tf` with `import {}` blocks for 3 singleton resources
+2. **protect** — Generates `query.tfquery.hcl` with `list {}` blocks for 16 listable resource types + `singletons_import.tf` with `import {}` blocks for 3 singleton resources
 3. **terraform** — Runs `terraform init`, then `terraform query -generate-config-out=generated.tf` (list resources), then `terraform plan -generate-config-out=singletons_generated.tf` (singletons) — all via tfexec
 4. **protect** — Renames auto-generated labels (`all_0`, `all_1`) to friendly names derived from resource `name`/`email` attributes, then populates **registry** from import blocks in the generated HCL
 5. **postprocess** — Strips null attributes, rewrites literal IDs to cross-resource Terraform references, splits into per-type files (no script/profile/package extraction for Protect)

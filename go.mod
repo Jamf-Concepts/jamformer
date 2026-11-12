@@ -3,7 +3,7 @@ module github.com/Jamf-Concepts/jamformer
 go 1.27.4
 
 require (
-	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.10.0
+	github.com/Jamf-Concepts/jamfprotect-go-sdk v0.11.0
 	github.com/deploymenttheory/go-api-sdk-jamfpro v1.53.1
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/hc-install v0.10.0

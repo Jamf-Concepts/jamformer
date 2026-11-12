@@ -1403,7 +1403,33 @@ func setupProtectRegistry() *registry.Registry {
 	reg.Register("jamfprotect_unified_logging_filter", "ulf-111", "jamfprotect_unified_logging_filter.time_machine")
 	reg.Register("jamfprotect_unified_logging_filter", "ulf-222", "jamfprotect_unified_logging_filter.screen_sharing")
 	reg.Register("jamfprotect_unified_logging_filter_set", "ulfs-333", "jamfprotect_unified_logging_filter_set.endpoint_diagnostics")
+	reg.Register("jamfprotect_custom_prevent_list", "cpl-444", "jamfprotect_custom_prevent_list.known_good")
+	reg.Register("jamfprotect_prevent_list_set", "pls-555", "jamfprotect_prevent_list_set.endpoint_baseline")
 	return reg
+}
+
+func TestProtectPreventListSetReferences(t *testing.T) {
+	reg := setupProtectRegistry()
+	rules := protect.DefaultRules()
+	src := `resource "jamfprotect_prevent_list_set" "test" {
+  name          = "Baseline"
+  prevent_lists = ["cpl-444"]
+}`
+	f := parseHCLRef(t, src)
+	applyRules(refBlockBody(t, f), "jamfprotect_prevent_list_set", rules, reg)
+	if result := string(f.Bytes()); !strings.Contains(result, "jamfprotect_custom_prevent_list.known_good.id") {
+		t.Errorf("Expected prevent_lists to reference known_good, got:\n%s", result)
+	}
+
+	planSrc := `resource "jamfprotect_plan" "test" {
+  name              = "Plan"
+  prevent_list_sets = ["pls-555"]
+}`
+	pf := parseHCLRef(t, planSrc)
+	applyRules(refBlockBody(t, pf), "jamfprotect_plan", rules, reg)
+	if result := string(pf.Bytes()); !strings.Contains(result, "jamfprotect_prevent_list_set.endpoint_baseline.id") {
+		t.Errorf("Expected prevent_list_sets to reference endpoint_baseline, got:\n%s", result)
+	}
 }
 
 func TestProtectGroupRoleReference(t *testing.T) {
