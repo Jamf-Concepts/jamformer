@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	"github.com/deploymenttheory/go-api-sdk-jamfpro/sdk/jamfpro"
 )
 
@@ -141,7 +142,12 @@ func downloadPackage(client *jamfpro.Client, w packageWork, pkgsDir string, n, t
 }
 
 func downloadFile(url, dest string) error {
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", useragent.String())
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	"github.com/jamf/jamfplatform-go-sdk/jamfplatform"
 	sdkpro "github.com/jamf/jamfplatform-go-sdk/jamfplatform/pro"
 )
@@ -179,7 +180,12 @@ var errStalled = errors.New("download stalled")
 // newDownloadClient builds the client for CloudFront downloads: the default
 // transport's dial, TLS and proxy settings, plus a response-header timeout.
 func newDownloadClient(headerTimeout time.Duration) *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
+	// DefaultTransport may have been wrapped by useragent.InstallDefault; fall
+	// back to the stock settings then. The User-Agent is set per request.
+	t := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = dt.Clone()
+	}
 	t.ResponseHeaderTimeout = headerTimeout
 	return &http.Client{Transport: t}
 }
@@ -192,6 +198,7 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
+	req.Header.Set("User-Agent", useragent.String())
 	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return err

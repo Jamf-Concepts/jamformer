@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Jamf-Concepts/jamformer/useragent"
 	"github.com/Jamf-Concepts/jamfprotect-go-sdk/jamfprotect"
 )
 
@@ -13,7 +14,7 @@ import (
 // to verify that the credentials are valid. Returns the authenticated client
 // for reuse in pre-discovery checks.
 func VerifyAuth(url, clientID, clientSecret string) (*jamfprotect.Client, error) {
-	c := jamfprotect.NewClient(url, clientID, clientSecret)
+	c := jamfprotect.NewClient(url, clientID, clientSecret, jamfprotect.WithUserAgent(useragent.String()))
 
 	if _, err := c.AccessToken(context.Background()); err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)

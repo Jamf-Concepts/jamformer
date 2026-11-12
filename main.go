@@ -32,6 +32,7 @@ import (
 	"github.com/Jamf-Concepts/jamformer/secrets"
 	"github.com/Jamf-Concepts/jamformer/terraform"
 	"github.com/Jamf-Concepts/jamformer/update"
+	"github.com/Jamf-Concepts/jamformer/useragent"
 )
 
 // version, commit, and date are set at build time via -ldflags
@@ -484,6 +485,8 @@ func printResourceList(provider string) {
 }
 
 func main() {
+	useragent.SetVersion(version)
+
 	// Intercept -help <topic> before flag.Parse (which treats -help specially)
 	if checkHelpArgs() {
 		os.Exit(0)
