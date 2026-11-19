@@ -12,7 +12,7 @@ require (
 	github.com/hashicorp/terraform-json v0.29.0
 	github.com/jamf/jamfplatform-go-sdk v1.12.1
 	github.com/rs/zerolog v1.35.1
-	github.com/zclconf/go-cty v1.19.0
+	github.com/zclconf/go-cty v1.20.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
 	golang.org/x/term v0.47.0
 )
